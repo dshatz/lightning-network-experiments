@@ -1,0 +1,26 @@
+version: '2.2'
+services:
+  lightning:
+    build: 
+      context: lightning
+    depends_on:
+    -  bitcoind
+    command:
+     --bitcoin-rpcconnect=bitcoind
+     --bitcoin-rpcport=8332
+     --bitcoin-rpcuser=bitcoind
+     --bitcoin-rpcpassword=TExfZt8cjMC7rJaP
+     --network=bitcoin
+  bitcoind:
+    image: ruimarinho/bitcoin-core:0.19.1
+    volumes:
+     - "./bitcoind-data:/home/bitcoin/.bitcoin"
+    ports:
+     - "8332:8332"
+    command:
+      -printtoconsole
+      -server=1
+      -rpcallowip=0.0.0.0/0
+      -rpcbind=0.0.0.0
+      -rpcuser=bitcoind
+      -rpcpassword=TExfZt8cjMC7rJaP
