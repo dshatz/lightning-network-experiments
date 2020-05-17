@@ -33,12 +33,17 @@ Failcode -1 and 16399 are special:
    `payment_hash` at random :-)
 
 """
+from concurrent.futures._base import ALL_COMPLETED, wait
+from concurrent.futures.thread import ThreadPoolExecutor
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timedelta
+from itertools import groupby, repeat
 from random import choice
+from typing import List, Union
 
+from pause import until
 from pyln.client import Plugin, RpcError
-from sqlalchemy import Column, Integer, String, DateTime
+from sqlalchemy import Column, Integer, String, DateTime, Boolean, ForeignKey, PrimaryKeyConstraint
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
@@ -82,6 +87,21 @@ class Probe(Base):
             'finished_at': str(self.finished_at),
         }
 
+
+class Node(Base):
+    __tablename__ = "nodes"
+    id = Column(String, primary_key=True)
+    ip4 = Column(String)
+    ip6 = Column(String)
+    tor2 = Column(String)
+    tor3 = Column(String)
+
+class Connection(Base):
+    __tablename__ = "connections"
+    node = Column(String, ForeignKey(Node.id, ondelete='RESTRICT'), primary_key=True)
+    time = Column(DateTime, primary_key=True, default=datetime.utcnow)
+    success = Column(Boolean)
+    error = Column(String, nullable=True)
 
 def start_probe(plugin):
     t = threading.Thread(target=probe, args=[plugin])
@@ -394,7 +414,7 @@ def probe_all(plugin, depth=1, probes=2500, **kwargs):
     for i in range(depth):
         new_paths = []
         for path in paths:
-            for channel in plugin.rpc.listchannels(source=path["dest"])["channels"]:
+            for channel in plugin.rpc.listchannels(source=path["dest"])["channels"]: # Channels going from path['dest']
                 # return channel
                 if len(path["route"]) == 0 or path["route"][-1]["channel"] != channel["short_channel_id"]:
                     stop = {}
@@ -431,6 +451,89 @@ def probe_all(plugin, depth=1, probes=2500, **kwargs):
 
 
 # return [paths, len(paths)]
+
+@plugin.async_method('connect_all')
+def connect_all(request, plugin):
+
+    CONNECTION_TIMEOUT = 10 # seconds
+    PARALLEL_CONNECTIONS = 4
+
+    try:
+
+        visible_nodes = plugin.rpc.listnodes()['nodes']
+
+        def address_by_type(addresses, type) -> Union[str, None]:
+            for a in addresses:
+                if a['type'] == type:
+                    addr = a['addr']
+                    return f"{addr}:{a['port']}" if 'port' in a else addr
+
+        session = plugin.Session()
+        public: List[Node] = list()
+
+        for n in visible_nodes:
+            node = Node(n['nodeid'])
+            addresses = n['addresses']
+            node.ip4 = address_by_type(addresses, 'ipv4')
+            node.ip6 = address_by_type(addresses, 'ipv6')
+            node.tor2 = address_by_type(addresses, 'torv2')
+            node.tor3 = address_by_type(addresses, 'torv3')
+
+            if node.ip4 or node.ip6 or node.tor2 or node.tor3:
+                public.append(node)
+
+
+            other_types = [address for address in addresses if address['type'] not in ['ipv4', 'ipv6', 'tor2', 'tor3']]
+
+            if other_types:
+                raise Exception(f"Found unknown address types: {other_types}")
+
+            session.add(node)
+        print(f"Saving {len(public)} nodes with exposed network addresses.")
+        session.flush()
+
+        def try_connect(node, dt) -> List[Connection]:
+            connections = []
+            for addr in [node.ip4, node.ip6, node.tor2, node.tor3]:
+                if addr:
+                    result = plugin.rpc.connect(addr)
+                    conn = Connection(node=node.id, time=dt)
+                    if result['code'] and result['message']:  # Error !
+                        conn.success = False
+                        conn.error = result['code'] + ': ' + result['message']
+                    else:
+                        conn.success = True
+                    plugin.rpc.disconnect(node.id)  # Don't forget to disconnect
+                    connections.append(conn)
+            return connections
+
+        def try_all_nodes():
+            with ThreadPoolExecutor(max_workers=PARALLEL_CONNECTIONS) as executor:
+                dt = datetime.utcnow()
+                futures = [executor.submit(try_connect, *args) for args in zip(public, repeat(dt))]
+                wait(futures, timeout=CONNECTION_TIMEOUT, return_when=ALL_COMPLETED)
+                connections: List[Connection] = [c for f in futures for c in f.result()]
+                session.add_all(connections)
+                session.flush()
+
+        offsets = [timedelta(minutes=10), timedelta(minutes=30), timedelta(minutes=60),
+                   timedelta(hours=2), timedelta(hours=4), timedelta(hours=8), timedelta(hours=12), timedelta(hours=16), timedelta(hours=20), timedelta(hours=24),
+                   timedelta(hours=36), timedelta(hours=48), timedelta(hours=60), timedelta(hours=72)]
+
+        iteration = 1
+        while offsets:
+            start = datetime.utcnow()
+            print(f"Iteration {iteration}. Trying to connect to {len(public)} nodes")
+            try_all_nodes()
+            print(f"Completed in {str((datetime.utcnow() - start).total_seconds())}")
+            delta = offsets.pop(0)
+            print(f"Will try again in {str(delta)}")
+            until(datetime.utcnow() + delta) # sleep until it's time to repeat the connections
+
+        return request.set_result("OK")
+
+    except Exception as e:
+        return request.set_result(str(e))
 
 
 @plugin.init()
