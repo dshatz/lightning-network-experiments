@@ -35,8 +35,9 @@ Failcode -1 and 16399 are special:
 """
 from copy import deepcopy
 from datetime import datetime
-from lightning import Plugin, RpcError
 from random import choice
+
+from pyln.client import Plugin, RpcError
 from sqlalchemy import Column, Integer, String, DateTime
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
@@ -80,6 +81,7 @@ class Probe(Base):
             'started_at': str(self.started_at),
             'finished_at': str(self.finished_at),
         }
+
 
 def start_probe(plugin):
     t = threading.Thread(target=probe, args=[plugin])
@@ -142,7 +144,7 @@ def traceroute(plugin, node_id, **kwargs):
         return traceroute
 
     # For each prefix length, shorten the route and attempt the payment
-    for l in range(1, len(traceroute['route'])+1):
+    for l in range(1, len(traceroute['route']) + 1):
         probe = {
             'route': traceroute['route'][:l],
             'payment_hash': ''.join(random.choice(string.hexdigits) for _ in range(64)),
@@ -223,6 +225,7 @@ def poll_payments(plugin):
         del probe['callback']
         cb(**probe)
 
+
 def clear_temporary_exclusion(plugin):
     timed_out = [k for k, v in temporary_exclusions.items() if v < time()]
     for k in timed_out:
@@ -232,45 +235,48 @@ def clear_temporary_exclusion(plugin):
         len(timed_out), len(temporary_exclusions))
     )
 
+
 def hi(plugin):
     return "hi"
 
+
 def schedule(plugin):
     # List of scheduled calls with next runtime, function and interval
-   # next_runs = [
-     #   (time() + 300, clear_temporary_exclusion, 300),
-     #   (time() + plugin.probe_interval, start_probe, plugin.probe_interval),
-     #   (time() + 1, poll_payments, 1),
-    #]
-   # heapq.heapify(next_runs)
-    next_run = time() + 60*60*24
-    #with open("/root/.lightning/probe_log.txt", "w") as f:
-        #f.write("HI!")
+    # next_runs = [
+    #   (time() + 300, clear_temporary_exclusion, 300),
+    #   (time() + plugin.probe_interval, start_probe, plugin.probe_interval),
+    #   (time() + 1, poll_payments, 1),
+    # ]
+    # heapq.heapify(next_runs)
+    next_run = time() + 60 * 60 * 24
+    # with open("/root/.lightning/probe_log.txt", "w") as f:
+    # f.write("HI!")
     while True:
-        #break
+        # break
         t = next_run - time()
         if t > 0:
             sleep(t)
         next_run = time() + plugin.probe_interval
         fname = "/root/.lightning/attempts/fullprobe_" + str(int(time()))
-        probe_two(plugin, depth = -1, file_name=fname)
-        #with open("/root/.lightning/results.txt","a") as f:
-            #for row in res:
-                #f.write(str(row))
-                #f.write("\n")
+        probe_two(plugin, depth=-1, file_name=fname)
+        # with open("/root/.lightning/results.txt","a") as f:
+        # for row in res:
+        # f.write(str(row))
+        # f.write("\n")
+
 
 @plugin.method('probe_two')
-def probe_two(plugin, depth = -1 ,amount=50000000, file_name=None, **kwargs):
-    paths = [{"channels": [], "route" : [], "start" :"033f12b6786951cc2f5084c6db6390c152240bb5ee1bbc9a0ed0f18038df97ea76", "prev_base_fee": 0, "prev_fee_rate": 0}]
-    
+def probe_two(plugin, depth=-1, amount=50000000, file_name=None, **kwargs):
+    paths = [
+        {"channels": [], "route": [], "start": "033f12b6786951cc2f5084c6db6390c152240bb5ee1bbc9a0ed0f18038df97ea76",
+         "prev_base_fee": 0, "prev_fee_rate": 0}]
+
     d = 0
     results = []
     att_chan = set()
-    SUCC="WIRE_INCORRECT_OR_UNKNOWN_PAYMENT_DETAILS"
+    SUCCESS_ERROR_MESSAGE = "WIRE_INCORRECT_OR_UNKNOWN_PAYMENT_DETAILS"
 
-
-
-    #for i in range(depth):
+    # for i in range(depth):
     while len(paths) > 0:
         if d == depth:
             break
@@ -280,66 +286,67 @@ def probe_two(plugin, depth = -1 ,amount=50000000, file_name=None, **kwargs):
         new_paths = []
         for path in paths:
             for channel in plugin.rpc.listchannels(source=path["start"])["channels"]:
-                #return channel
+                # return channel
                 dir = 1
                 if channel["destination"] > channel["source"]:
                     dir = 0
-                if len(path["channels"]) == 0 or (channel["short_channel_id"], dir) not in att_chan :
+                if len(path["channels"]) == 0 or (channel["short_channel_id"], dir) not in att_chan:
                     stop = {}
                     stop["id"] = channel["destination"]
                     stop["channel"] = channel["short_channel_id"]
                     stop["direction"] = dir
-                    #stop["source"] = channel["source"]
-                    #stop["destination"] = channel["destination"]
+                    # stop["source"] = channel["source"]
+                    # stop["destination"] = channel["destination"]
 
                     cloned_path = deepcopy(path)
 
-                   #CLTV Expiries & Fees
+                    # CLTV Expiries & Fees
                     if len(cloned_path["route"]) != 0:
-                        #stop["msatoshi"] = amount
-                        for s in cloned_path["route"]: #channel["delay"]??
+                        # stop["msatoshi"] = amount
+                        for s in cloned_path["route"]:  # channel["delay"]??
                             s["delay"] += channel["delay"]
-                        prev_payment =  path["route"][-1]["msatoshi"]
-                        #stop["msatoshi"] = prev_payment -  math.ceil(path["prev_fee_rate"]* prev_payment / 1000) - path["prev_base_fee"]
-                        stop["msatoshi"] = prev_payment - round(channel["fee_per_millionth"] * prev_payment / 1000000) - channel["base_fee_millisatoshi"]
+                        prev_payment = path["route"][-1]["msatoshi"]
+                        # stop["msatoshi"] = prev_payment -  math.ceil(path["prev_fee_rate"]* prev_payment / 1000) - path["prev_base_fee"]
+                        stop["msatoshi"] = prev_payment - round(channel["fee_per_millionth"] * prev_payment / 1000000) - \
+                                           channel["base_fee_millisatoshi"]
                         if stop["msatoshi"] < 0:
-                            #TODO better handling
+                            # TODO better handling
                             continue
                     else:
-                         stop["msatoshi"] = amount
+                        stop["msatoshi"] = amount
 
                     stop["delay"] = 9
 
                     stop["amount_msat"] = str(stop["msatoshi"]) + "msat"
 
                     new_route = {}
-                    new_route["route"] = cloned_path["route"] +[stop]
+                    new_route["route"] = cloned_path["route"] + [stop]
                     new_route["start"] = channel["destination"]
                     new_route["channels"] = cloned_path["channels"] + [stop["channel"]]
-                    #new_route["prev_delay"] = channel["delay"]
-                    #new_route["prev_base_fee"] = channel["base_fee_millisatoshi"]
-                    #new_route["prev_fee_rate"] = channel["fee_per_millionth"]
-                    #return plugin.rpc.getroute("02ad6fb8d693dc1e4569bcedefadf5f72a931ae027dc0f0$
+                    # new_route["prev_delay"] = channel["delay"]
+                    # new_route["prev_base_fee"] = channel["base_fee_millisatoshi"]
+                    # new_route["prev_fee_rate"] = channel["fee_per_millionth"]
+                    # return plugin.rpc.getroute("02ad6fb8d693dc1e4569bcedefadf5f72a931ae027dc0f0$
                     new_paths.append(new_route)
-                    #if len(new_route["route"]) == 3:
-                        #return new_route
-                    
-                #Send Payments
+                    # if len(new_route["route"]) == 3:
+                    # return new_route
+
+                    # Send Payments
                     payment_hash = ''.join(choice(string.hexdigits) for _ in range(64))
                     hashes.append(payment_hash)
                     while True:
                         try:
-                            #sleep(0.25)
-                            #plugin.rpc.sendpay(new_route["route"], payment_hash)
+                            # sleep(0.25)
+                            # plugin.rpc.sendpay(new_route["route"], payment_hash)
                             att_chan.add((stop["channel"], dir))
                             break
                         except Exception as e:
-                            results.append([None,e.error, "RPC__Error",None, None, None, None])
+                            results.append([None, e.error, "RPC__Error", None, None, None, None])
 
                             return str(e)
                             break
 
-        #Get Payments Back
+        # Get Payments Back
         paths = new_paths
         new_paths = []
         for idx, hash in enumerate(hashes):
@@ -350,42 +357,45 @@ def probe_two(plugin, depth = -1 ,amount=50000000, file_name=None, **kwargs):
                 plugin.rpc.waitsendpay(hash, 240)
             except RpcError as e:
                 if "data" not in e.error:
-                    results.append([time(),paths[idx]["channels"][-1],",".join(paths[idx]["channels"]), "Payment_Error", paths[idx]["start"], 0, None])
-                    #continue
-                    #return e.error
-                else: 
+                    results.append(
+                        [time(), paths[idx]["channels"][-1], ",".join(paths[idx]["channels"]), "Payment_Error",
+                         paths[idx]["start"], 0, None])
+                    # continue
+                    # return e.error
+                else:
                     resp = e.error["data"]
-                    if resp["failcodename"] == SUCC:
+                    if resp["failcodename"] == SUCCESS_ERROR_MESSAGE:
                         new_paths.append(paths[idx])
-                        #succ_chan.add(paths[idx]["route"][-1]["channel"]))
-                    else:
-                        if  resp["failcodename"] =="WIRE_UNKNOWN_NEXT_PEER":
-                            pass
-                            #return paths[idx]["channels"]
-                    
-                    #fail_chan.add(paths[idx]["channels"][-1])
-                #att_chan.add(paths[idx]["channels"][-1])
-                    results.append([time(), paths[idx]["channels"][-1],",".join(paths[idx]["channels"]),resp["failcodename"],paths[idx]["start"],resp["erring_index"], paths[idx]["route"][-1]["msatoshi"]])
+                        # succ_chan.add(paths[idx]["route"][-1]["channel"]))
+                    elif resp["failcodename"] == "WIRE_UNKNOWN_NEXT_PEER":
+                        pass
+                        # return paths[idx]["channels"]
+
+                    # fail_chan.add(paths[idx]["channels"][-1])
+                    # att_chan.add(paths[idx]["channels"][-1])
+                    results.append(
+                        [time(), paths[idx]["channels"][-1], ",".join(paths[idx]["channels"]), resp["failcodename"],
+                         paths[idx]["start"], resp["erring_index"], paths[idx]["route"][-1]["msatoshi"]])
                 if file_name is not None:
                     with open("/root/.lightning/attempts/" + file_name, "a+") as f:
                         f.write(str(results[-1]))
                         f.write("\n")
         paths = new_paths
 
-    #res = Counter([r[3] for r in results])
+    # res = Counter([r[3] for r in results])
 
-    return  results
+    return results
 
 
 @plugin.method('probe_all')
-def probe_all(plugin, depth = 1, probes=2500, **kwargs):
-    paths = [{"route" : [], "dest" : "033f12b6786951cc2f5084c6db6390c152240bb5ee1bbc9a0ed0f18038df97ea76"}]
-    
+def probe_all(plugin, depth=1, probes=2500, **kwargs):
+    paths = [{"route": [], "dest": "033f12b6786951cc2f5084c6db6390c152240bb5ee1bbc9a0ed0f18038df97ea76"}]
+
     for i in range(depth):
         new_paths = []
         for path in paths:
             for channel in plugin.rpc.listchannels(source=path["dest"])["channels"]:
-                #return channel
+                # return channel
                 if len(path["route"]) == 0 or path["route"][-1]["channel"] != channel["short_channel_id"]:
                     stop = {}
                     stop["id"] = channel["destination"]
@@ -393,22 +403,22 @@ def probe_all(plugin, depth = 1, probes=2500, **kwargs):
                     stop["direction"] = 1
                     stop["msatoshi"] = 500000 - 1000 * i
                     stop["amount_msat"] = str(stop["msatoshi"]) + "msat"
-                    stop["delay"] = 500 - 150*i
+                    stop["delay"] = 500 - 150 * i
                     new_route = {}
-                    new_route["route"] = path["route"] +[stop]
+                    new_route["route"] = path["route"] + [stop]
                     new_route["dest"] = channel["destination"]
-                    #return plugin.rpc.getroute("02ad6fb8d693dc1e4569bcedefadf5f72a931ae027dc0f0c544b34c1c6f3b9a02b", msatoshi=10000, riskfactor=1)
+                    # return plugin.rpc.getroute("02ad6fb8d693dc1e4569bcedefadf5f72a931ae027dc0f0c544b34c1c6f3b9a02b", msatoshi=10000, riskfactor=1)
                     new_paths.append(new_route)
                     paths = new_paths
 
-    #Send Payments
+    # Send Payments
     hashes = []
     for path in paths[:probes]:
         payment_hash = ''.join(choice(string.hexdigits) for _ in range(64))
         hashes.append(payment_hash)
         plugin.rpc.sendpay(path["route"], payment_hash)
 
-    #Get Payments Back
+    # Get Payments Back
     results = []
     for hash in hashes:
         try:
@@ -417,10 +427,11 @@ def probe_all(plugin, depth = 1, probes=2500, **kwargs):
             if "data" not in e.error:
                 return e.error
             results.append(e.error["data"])
-    return [results, Counter([r["failcodename"]for r in results])]
-#return [paths, len(paths)]
+    return [results, Counter([r["failcodename"] for r in results])]
 
-    
+
+# return [paths, len(paths)]
+
 
 @plugin.init()
 def init(configuration, options, plugin):
@@ -455,4 +466,3 @@ plugin.add_option(
     'How many seconds should temporarily failed channels be excluded?'
 )
 plugin.run()
-
