@@ -11,10 +11,11 @@ services:
      --bitcoin-rpcuser=bitcoind
      --bitcoin-rpcpassword=TExfZt8cjMC7rJaP
      --network=bitcoin
+     --plugin=/plugins/probe/probe.py
   bitcoind:
     image: ruimarinho/bitcoin-core:0.19.1
     volumes:
-     - "./bitcoind-data:/home/bitcoin/.bitcoin"
+     - "/srv/bitcoind-data:/home/bitcoin/.bitcoin"
     ports:
      - "8332:8332"
     command:
