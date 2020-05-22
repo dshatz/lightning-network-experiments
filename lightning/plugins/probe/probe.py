@@ -466,10 +466,10 @@ def connect_all(request, plugin):
             for a in addresses:
                 if a['type'] == type:
                     addr = a['addr']
-                    return f"{addr}:{a['port']}" if 'port' in a else addr
+                    return "{}:{}".format(addr, a['port']) if 'port' in a else addr
 
         session = plugin.Session()
-        public: List[Node] = list()
+        public = list()
 
         for n in visible_nodes:
             node = Node(n['nodeid'])
@@ -486,10 +486,10 @@ def connect_all(request, plugin):
             other_types = [address for address in addresses if address['type'] not in ['ipv4', 'ipv6', 'tor2', 'tor3']]
 
             if other_types:
-                raise Exception(f"Found unknown address types: {other_types}")
+                raise Exception("Found unknown address types: " + other_types)
 
             session.add(node)
-        print(f"Saving {len(public)} nodes with exposed network addresses.")
+        print("Saving {} nodes with exposed network addresses.".format(len(public)))
         session.flush()
 
         def try_connect(node, dt) -> List[Connection]:
@@ -512,7 +512,7 @@ def connect_all(request, plugin):
                 dt = datetime.utcnow()
                 futures = [executor.submit(try_connect, *args) for args in zip(public, repeat(dt))]
                 wait(futures, timeout=CONNECTION_TIMEOUT, return_when=ALL_COMPLETED)
-                connections: List[Connection] = [c for f in futures for c in f.result()]
+                connections = [c for f in futures for c in f.result()]
                 session.add_all(connections)
                 session.flush()
 
@@ -523,11 +523,11 @@ def connect_all(request, plugin):
         iteration = 1
         while offsets:
             start = datetime.utcnow()
-            print(f"Iteration {iteration}. Trying to connect to {len(public)} nodes")
+            print("Iteration {}. Trying to connect to {} nodes".format(iteration, len(public)))
             try_all_nodes()
-            print(f"Completed in {str((datetime.utcnow() - start).total_seconds())}")
+            print("Completed in {}".format(str((datetime.utcnow() - start).total_seconds())))
             delta = offsets.pop(0)
-            print(f"Will try again in {str(delta)}")
+            print("Will try again in {}".format(str(delta)))
             until(datetime.utcnow() + delta) # sleep until it's time to repeat the connections
 
         return request.set_result("OK")
