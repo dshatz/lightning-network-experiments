@@ -33,14 +33,21 @@ Failcode -1 and 16399 are special:
    `payment_hash` at random :-)
 
 """
+import csv
+import itertools
 from concurrent.futures._base import ALL_COMPLETED, wait
 from concurrent.futures.thread import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import datetime, timedelta
+from functools import partial
 from itertools import groupby, repeat
+from os import listdir
+from os.path import isfile, join
 from random import choice
 from typing import List, Union
+from uuid import uuid4
 
+import requests
 from pause import until
 from pyln.client import Plugin, RpcError
 from sqlalchemy import Column, Integer, String, DateTime, Boolean, ForeignKey, PrimaryKeyConstraint
@@ -62,6 +69,32 @@ plugin = Plugin()
 
 exclusions = []
 temporary_exclusions = {}
+
+results_dir = "/root/results/"
+
+
+def next_experiment_id():
+    if not os.path.exists(results_dir):
+        os.makedirs(results_dir)
+
+    experiment_files = [f for f in listdir(results_dir) if isfile(join(results_dir, f)) and f.endswith('.log')]
+    ids = [int(file.split('.')[0]) for file in experiment_files]
+    if not ids:
+        ids = [0]
+    return max(ids) + 1
+
+
+def log(eid, msg):
+    file = join(results_dir, '{}.log'.format(eid))
+    with open(file, 'a+') as f:
+        print(msg.encode('ascii', 'ignore').decode('ascii'), file=f)
+
+
+def experiment_csv(eid, name=None):
+    filename = str(eid)
+    if name:
+        filename += '-' + name
+    return join(results_dir, '{}.csv'.format(filename))
 
 
 class Probe(Base):
@@ -96,12 +129,14 @@ class Node(Base):
     tor2 = Column(String)
     tor3 = Column(String)
 
+
 class Connection(Base):
     __tablename__ = "connections"
     node = Column(String, ForeignKey(Node.id, ondelete='RESTRICT'), primary_key=True)
     time = Column(DateTime, primary_key=True, default=datetime.utcnow)
     success = Column(Boolean)
     error = Column(String, nullable=True)
+
 
 def start_probe(plugin):
     t = threading.Thread(target=probe, args=[plugin])
@@ -452,6 +487,133 @@ def probe_all(plugin, depth=1, probes=2500, **kwargs):
 
 # return [paths, len(paths)]
 
+running_experiments = dict() # name => experiment object
+class Experiment(object):
+    def __init__(self, name, csv_names, start_new=True):
+        self.name = name
+        self.csv_names = csv_names
+        self.start_new = start_new
+
+    def __enter__(self):
+        if self.name not in running_experiments:
+            self.eid = next_experiment_id()
+        else:
+            if self.start_new:
+                raise Exception("Experiment with name {} is running with EID {}".format(self.name, running_experiments[self.name].eid))
+            else:
+                self.eid = running_experiments[self.name].eid
+
+        print = lambda msg="": log(eid=self.eid, msg=msg)
+        csvs = []
+        if not self.csv_names:
+            self.csv_names = []
+        for csv_name in self.csv_names:
+            csvfile = lambda rows, name=csv_name, eid=self.eid: write_csv_rows(eid, name, rows)
+            csvs.append(csvfile)
+
+        running_experiments[self.eid] = self
+        print("Starting experiment {}, EID: {}".format(self.name, self.eid))
+        return (self.eid, print, *csvs)
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        del running_experiments[self.eid]
+        with open('/root/exception{}.txt'.format(self.eid), 'a+') as f:
+            f.write(str(exc_type))
+            f.write(str(exc_val))
+            f.write(str(exc_tb))
+        return False
+
+
+def write_csv_rows(eid, name, rows):
+    csvfile = experiment_csv(eid, name=name)
+    new = not os.path.exists(csvfile)
+    if isinstance(rows, dict):
+        rows = [rows]
+
+    with open(csvfile, 'a+', newline='') as csvfile:
+        fieldnames = list(rows)[0].keys()
+        writer = csv.DictWriter(csvfile, delimiter=',',
+                                quotechar='"', quoting=csv.QUOTE_ALL, fieldnames=fieldnames)
+        if new:
+            writer.writeheader()
+        writer.writerows(rows)
+
+
+@plugin.method('only_connect')
+def only_connect():
+
+    N_PEERS = 10
+
+    with Experiment('only_connect', ['peers', 'gossip']) as (eid, print, write_peers, write_gossip):
+
+        # Get 10 best-connected nodes from 1ml.com
+        # We can't use the node local view yet because it's empty since we are not connected to any nodes.
+        best_connected_nodes = requests.get('https://1ml.com/node?order=channelcount&json=true').json()
+        first10 = best_connected_nodes[0:N_PEERS]
+        print("First {} best connected nodes: {}".format(N_PEERS, first10))
+        print()
+
+        disconnects = dict()
+
+        # This is basically what goes into the csv
+        rows = dict() # nodeid => row
+        for node in first10:
+            nodeid = node['pub_key']
+            address = node['addresses'][0]['addr']
+            host, port = address.split(':')
+            connectstart = datetime.utcnow()
+            result = plugin.rpc.connect(nodeid, host=host, port=port)
+            connectend = datetime.utcnow()
+            print("Connection to {}: {}".format(nodeid, result))
+            write_peers(dict(nodeid=nodeid, address=address, connectstart=connectstart, connected_after=str(connectend - connectstart), connectresult=result))
+
+
+        #write_peers(rows.values())
+        # with write_peers() as csvfile:
+        #     fieldnames = iter(rows.values()).__next__().keys()
+        #     writer = csv.DictWriter(csvfile, delimiter=',',
+        #                             quotechar='"', quoting=csv.QUOTE_ALL, fieldnames=fieldnames)
+        #     writer.writeheader()
+        #     writer.writerows(rows.values())
+
+
+        delays = []
+        delays += map(lambda s: timedelta(seconds=s), [2, 4, 8, 12, 16, 20, 30, 60])
+        delays += map(lambda m: timedelta(minutes=m), [5, 10, 20, 30, 45, 60])
+        delays += map(lambda h: timedelta(hours=h), [2, 4, 8, 12, 16, 20, 40])
+
+        def listnodeids():
+            """List ids of all nodes in our local network view"""
+            return {n['nodeid'] for n in plugin.rpc.listnodes()['nodes']}
+
+        start = datetime.utcnow()
+        seen_node_ids = set()
+        while delays:
+            next_delay = delays.pop(0)
+            until(start + next_delay) # Wait
+            print("{} after start ({})!".format(next_delay, start))
+
+            visible_nodes = listnodeids()
+            new_nodes = visible_nodes - seen_node_ids
+            seen_node_ids.update(new_nodes)
+
+            write_gossip(dict(delay=str(next_delay),
+                              timestamp=(start + next_delay).isoformat(),
+                              n_peers=N_PEERS - len(disconnects),
+                              new_nodes_since_last_time=len(new_nodes),
+                              total_nodes=len(visible_nodes)))
+
+
+def on_disconnect(data, **kwargs):
+    nodeid = data['id']
+    if 'only_connect' in running_experiments:
+        with Experiment('only_connect', ['disconnects'], start_new=False) as (eid, print, write_disconnect):
+            print("Node disconnected! {}".format(nodeid))
+
+            write_disconnect(dict(nodeid=nodeid, timestamp=datetime.utcnow().isoformat()))
+
+
+
 @plugin.async_method('connect_all')
 def connect_all(request, plugin):
 
@@ -486,7 +648,7 @@ def connect_all(request, plugin):
             other_types = [address for address in addresses if address['type'] not in ['ipv4', 'ipv6', 'tor2', 'tor3']]
 
             if other_types:
-                raise Exception("Found unknown address types: " + other_types)
+                raise Exception("Found unknown address types: " + str(other_types))
 
             session.add(node)
         print("Saving {} nodes with exposed network addresses.".format(len(public)))
@@ -568,4 +730,5 @@ plugin.add_option(
     '1800',
     'How many seconds should temporarily failed channels be excluded?'
 )
+plugin.add_subscription('disconnect', on_disconnect)
 plugin.run()

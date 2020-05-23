@@ -5,6 +5,9 @@ services:
       context: lightning
     depends_on:
     -  bitcoind
+    volumes:
+    - "./lightning/plugins/:/plugins:Z"
+    - "./results/:/root/results:Z"
     command:
      --bitcoin-rpcconnect=bitcoind
      --bitcoin-rpcport=8332

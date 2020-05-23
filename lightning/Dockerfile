@@ -4,8 +4,8 @@ RUN apt update && apt install -y python3 python3-pip
 
 ADD plugins/probe/requirements.txt ./plugins/probe/
 RUN pip3 install -r ./plugins/probe/requirements.txt
-ADD plugins/probe/probe.py ./plugins/probe/probe.py
-RUN chmod a+x ./plugins/probe/probe.py
+#ADD plugins/probe/probe.py ./plugins/probe/probe.py
+#RUN chmod a+x ./plugins/probe/probe.py
 
 WORKDIR /
 #CMD ["lightningd", "--network=bitcoin", "--log-level=debug"]
