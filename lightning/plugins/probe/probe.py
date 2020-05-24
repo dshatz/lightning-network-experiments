@@ -565,10 +565,15 @@ def only_connect():
             address = node['addresses'][0]['addr']
             host, port = address.split(':')
             connectstart = datetime.utcnow()
-            result = plugin.rpc.connect(nodeid, host=host, port=port)
+            try:
+                result = plugin.rpc.connect(nodeid, host=host, port=port)
+                success = True
+            except Exception as e:
+                result = repr(e)
+                success = False
             connectend = datetime.utcnow()
             print("Connection to {}: {}".format(nodeid, result))
-            write_peers(dict(nodeid=nodeid, address=address, connectstart=connectstart, connected_after=str(connectend - connectstart), connectresult=result))
+            write_peers(dict(nodeid=nodeid, address=address, connectstart=connectstart, connected_after=str(connectend - connectstart), success=success, connectresult=result))
 
 
         #write_peers(rows.values())
@@ -602,7 +607,7 @@ def only_connect():
 
             write_gossip(dict(delay=str(next_delay),
                               timestamp=(start + next_delay).isoformat(),
-                              n_peers=N_PEERS - len(disconnects),
+                              n_peers=len(first10) - len(disconnects),
                               new_nodes_since_last_time=len(new_nodes),
                               total_nodes=len(visible_nodes)))
 
