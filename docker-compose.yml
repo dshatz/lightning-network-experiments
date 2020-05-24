@@ -14,6 +14,9 @@ services:
      --bitcoin-rpcuser=bitcoind
      --bitcoin-rpcpassword=TExfZt8cjMC7rJaP
      --network=bitcoin
+     --proxy=127.0.0.1:9050
+     --bind-addr=127.0.0.1:9735
+     --always-use-proxy=true
      --plugin=/plugins/probe/probe.py
   bitcoind:
     image: ruimarinho/bitcoin-core:0.19.1

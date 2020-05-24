@@ -87,7 +87,7 @@ def next_experiment_id():
 def log(eid, msg):
     file = join(results_dir, '{}.log'.format(eid))
     with open(file, 'a+') as f:
-        print(msg.encode('ascii', 'ignore').decode('ascii'), file=f)
+        print("[{}]: {}".format(datetime.utcnow().isoformat(), msg.encode('ascii', 'ignore').decode('ascii')), file=f)
 
 
 def experiment_csv(eid, name=None):
