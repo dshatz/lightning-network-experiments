@@ -541,15 +541,18 @@ def write_csv_rows(eid, name, rows):
 
 @plugin.method('only_connect')
 def only_connect():
+    """
+    Connect only to nodes and see if they gossip us and if they disconnect.
+    """
 
-    N_PEERS = 10
+    N_PEERS = -1 # number of peers to connect to. -1 For all on 1ml.com
 
     with Experiment('only_connect', ['peers', 'gossip']) as (eid, print, write_peers, write_gossip):
 
         # Get 10 best-connected nodes from 1ml.com
         # We can't use the node local view yet because it's empty since we are not connected to any nodes.
         best_connected_nodes = requests.get('https://1ml.com/node?order=channelcount&json=true').json()
-        first10 = best_connected_nodes[0:N_PEERS]
+        first10 = best_connected_nodes[0:N_PEERS] if N_PEERS != -1 else best_connected_nodes
         print("First {} best connected nodes: {}".format(N_PEERS, first10))
         print()
 
@@ -579,7 +582,7 @@ def only_connect():
 
         delays = []
         delays += map(lambda s: timedelta(seconds=s), [2, 4, 8, 12, 16, 20, 30, 60])
-        delays += map(lambda m: timedelta(minutes=m), [5, 10, 20, 30, 45, 60])
+        delays += map(lambda m: timedelta(minutes=m), [1, 2, 3, 4, 5, 6, 10, 20, 30, 45, 60])
         delays += map(lambda h: timedelta(hours=h), [2, 4, 8, 12, 16, 20, 40])
 
         def listnodeids():
