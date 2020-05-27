@@ -42,7 +42,7 @@ from datetime import datetime, timedelta
 from functools import partial
 from itertools import groupby, repeat
 from os import listdir
-from os.path import isfile, join
+from os.path import isfile, join, exists
 from random import choice
 from typing import List, Union
 from uuid import uuid4
@@ -540,7 +540,7 @@ def write_csv_rows(eid, name, rows):
 
 
 @plugin.method('only_connect')
-def only_connect():
+def only_connect(plugin, nodes_file=None):
     """
     Connect only to nodes and see if they gossip us and if they disconnect.
     """
@@ -549,21 +549,29 @@ def only_connect():
 
     with Experiment('only_connect', ['peers', 'gossip']) as (eid, print, write_peers, write_gossip):
 
+        if nodes_file:
+            print("nodes_file = {}".format(nodes_file))
+            if not exists(nodes_file):
+                raise Exception('File not found')
+            with open(nodes_file, 'r') as f:
+                nodes = json.loads(f.read())['nodes']
+            print("Found {} nodes in nodes_file".format(len(nodes)))
+
+
         # Get 10 best-connected nodes from 1ml.com
         # We can't use the node local view yet because it's empty since we are not connected to any nodes.
-        best_connected_nodes = requests.get('https://1ml.com/node?order=channelcount&json=true').json()
-        first10 = best_connected_nodes[0:N_PEERS] if N_PEERS != -1 else best_connected_nodes
-        print("First {} best connected nodes: {}".format(N_PEERS, first10))
+        #nodes = nodes_with_degree(channel_count_min=degree_min, channel_count_max=degree_max)
+        #best_connected_nodes = requests.get('https://1ml.com/node?order=channelcount&json=true').json()
+        #first10 = best_connected_nodes[0:N_PEERS] if N_PEERS != -1 else best_connected_nodes
+        print("First {} best connected nodes: {}".format(N_PEERS, nodes))
         print()
 
         disconnects = dict()
 
-        # This is basically what goes into the csv
-        rows = dict() # nodeid => row
-        for node in first10:
-            nodeid = node['pub_key']
-            address = node['addresses'][0]['addr']
-            host, port = address.split(':')
+        for node in nodes:
+            nodeid = node['nodeid']
+            host = node['addresses'][0]['address']
+            port = node['addresses'][0]['port']
             connectstart = datetime.utcnow()
             try:
                 result = plugin.rpc.connect(nodeid, host=host, port=port)
@@ -573,16 +581,8 @@ def only_connect():
                 success = False
             connectend = datetime.utcnow()
             print("Connection to {}: {}".format(nodeid, result))
-            write_peers(dict(nodeid=nodeid, address=address, connectstart=connectstart, connected_after=str(connectend - connectstart), success=success, connectresult=result))
+            write_peers(dict(nodeid=nodeid, address="{}:{}".format(host, port), connectstart=connectstart, connected_after=str(connectend - connectstart), success=success, connectresult=result))
 
-
-        #write_peers(rows.values())
-        # with write_peers() as csvfile:
-        #     fieldnames = iter(rows.values()).__next__().keys()
-        #     writer = csv.DictWriter(csvfile, delimiter=',',
-        #                             quotechar='"', quoting=csv.QUOTE_ALL, fieldnames=fieldnames)
-        #     writer.writeheader()
-        #     writer.writerows(rows.values())
 
 
         delays = []
@@ -607,7 +607,7 @@ def only_connect():
 
             write_gossip(dict(delay=str(next_delay),
                               timestamp=(start + next_delay).isoformat(),
-                              n_peers=len(first10) - len(disconnects),
+                              n_peers=len(nodes) - len(disconnects),
                               new_nodes_since_last_time=len(new_nodes),
                               total_nodes=len(visible_nodes)))
 
@@ -620,6 +620,14 @@ def on_disconnect(data, **kwargs):
 
             write_disconnect(dict(nodeid=nodeid, timestamp=datetime.utcnow().isoformat()))
 
+
+def nodes_with_degree(channel_count_min, channel_count_max, limit=50):
+    nodes = [(n, len(plugin.rpc.listchannels(source=n['nodeid'])['channels'])) for n in plugin.rpc.listnodes()]
+
+    with_degree = [n for n, degree in nodes if channel_count_min <= degree <= channel_count_max]
+    with open('/root/results/{}-{}.degreenodes'.format(channel_count_min, channel_count_max), 'w+') as f:
+        f.write(json.dumps(dict(nodes=with_degree)))
+    return with_degree[:min(limit, len(with_degree))]
 
 
 @plugin.async_method('connect_all')
