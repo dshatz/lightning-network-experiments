@@ -583,8 +583,6 @@ def only_connect(plugin, nodes_file=None):
             print("Connection to {}: {}".format(nodeid, result))
             write_peers(dict(nodeid=nodeid, address="{}:{}".format(host, port), connectstart=connectstart, connected_after=str(connectend - connectstart), success=success, connectresult=result))
 
-
-
         delays = []
         delays += map(lambda s: timedelta(seconds=s), [2, 4, 8, 12, 16, 20, 30, 60])
         delays += map(lambda m: timedelta(minutes=m), [1, 2, 3, 4, 5, 6, 10, 20, 30, 45, 60])
@@ -620,6 +618,14 @@ def on_disconnect(data, **kwargs):
 
             write_disconnect(dict(nodeid=nodeid, timestamp=datetime.utcnow().isoformat()))
 
+@plugin.method('nodes_with_degree')
+def nodes_with_degree(channel_count_min, channel_count_max, limit=50):
+    nodes = [(n, len(plugin.rpc.listchannels(source=n['nodeid'])['channels'])) for n in plugin.rpc.listnodes()]
+
+    with_degree = [n for n, degree in nodes if channel_count_min <= degree <= channel_count_max]
+    with open('/root/results/{}-{}.degreenodes'.format(channel_count_min, channel_count_max), 'w+') as f:
+        f.write(json.dumps(dict(nodes=with_degree)))
+    return with_degree[:min(limit, len(with_degree))]
 
 def nodes_with_degree(channel_count_min, channel_count_max, limit=50):
     nodes = [(n, len(plugin.rpc.listchannels(source=n['nodeid'])['channels'])) for n in plugin.rpc.listnodes()]
