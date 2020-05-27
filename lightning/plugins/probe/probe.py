@@ -622,7 +622,7 @@ def on_disconnect(data, **kwargs):
 def nodes_with_degree(channel_count_min, channel_count_max, limit=50):
     nodes = [(n, len(plugin.rpc.listchannels(source=n['nodeid'])['channels'])) for n in plugin.rpc.listnodes()['nodes']]
 
-    with_degree = [n for n, degree in nodes if channel_count_min <= degree <= channel_count_max and n['addresses']]
+    with_degree = [n for n, degree in nodes if channel_count_min <= degree <= channel_count_max and 'addresses' in n]
     with_degree = with_degree[:min(limit, len(with_degree))]
     with open('/root/results/{}-{}.degreenodes'.format(channel_count_min, channel_count_max), 'w+') as f:
         f.write(json.dumps(dict(nodes=with_degree)))
