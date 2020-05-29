@@ -610,8 +610,8 @@ def only_connect(plugin, nodes_file=None):
                               total_nodes=len(visible_nodes)))
 
 
-def on_disconnect(data, **kwargs):
-    nodeid = data['id']
+def on_disconnect(id, **kwargs):
+    nodeid = id
     if 'only_connect' in running_experiments:
         with Experiment('only_connect', ['disconnects'], start_new=False) as (eid, print, write_disconnect):
             print("Node disconnected! {}".format(nodeid))
