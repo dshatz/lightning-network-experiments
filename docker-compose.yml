@@ -5,6 +5,8 @@ services:
       context: lightning
     depends_on:
     -  bitcoind
+    ports:
+    - "9735:9735"
     volumes:
     - "./lightning/plugins/:/plugins:Z"
     - "./results/:/root/results:Z"
@@ -15,7 +17,7 @@ services:
      --bitcoin-rpcpassword=TExfZt8cjMC7rJaP
      --network=bitcoin
      --proxy=127.0.0.1:9050
-     --bind-addr=127.0.0.1:9735
+     --bind-addr=0.0.0.0:9735
      --plugin=/plugins/probe/probe.py
   bitcoind:
     image: ruimarinho/bitcoin-core:0.19.1

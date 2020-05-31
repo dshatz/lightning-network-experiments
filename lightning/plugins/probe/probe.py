@@ -489,46 +489,76 @@ def probe_all(plugin, depth=1, probes=2500, **kwargs):
 
 running_experiments = dict() # name => experiment object
 class Experiment(object):
-    def __init__(self, name, csv_names, start_new=True):
+    """
+    A wrapper class for performing per-experiment logging.
+    Usage:
+    with Experiment('experiment_name', ['csv1', 'csv2']) as eid, print, write_csv1, write_csv2:
+        print("This is an experiment with experiment ID: " + eid)
+        print("This print function will log to a separate file with name {eid}.log")
+        write_csv1(dict(col1='value1', col2='value2')) # Writes 1 row into file `{eid}-csv1.csv', with headers
+        write_csv1(rows) # Can also write many rows, if a list of dicts is supplied.
+    """
+    def __init__(self, name, csv_names, allow_attach=False):
+        """
+        Start or attach to an experiment. There can never be 2 experiments with the same name running at the same time.
+        If :allow_attach is False and there is already an experiment with this name running, the method will raise an Exception.
+        If :allow_attach is True in the same circumstances, we will attach to the running experiment.
+
+        Starting a new experiment assigns a new Experiment ID (eid) to it. The log file and all CSVs will have the eid in their name.
+        Attaching to an already running experiment will not create a new eid, but instead re-use all the files.
+
+        :param name: Unique name of an experiment.
+        :param csv_names: A list of csv names that this experiment is going to write to. Not paths, just names.
+        Example: ['csv1', 'csv2'].
+        :param allow_attach: whether we want to allow attaching to the experiment if it is already running.
+        """
         self.name = name
         self.csv_names = csv_names
-        self.start_new = start_new
+        self.allow_attach = allow_attach
 
     def __enter__(self):
         if self.name not in running_experiments:
             self.eid = next_experiment_id()
         else:
-            if self.start_new:
-                raise Exception("Experiment with name {} is running with EID {}".format(self.name, running_experiments[self.name].eid))
+            if not self.allow_attach:
+                raise Exception("Experiment with name {} is already running with EID {}".format(self.name, running_experiments[self.name].eid))
             else:
+                # Attach
                 self.eid = running_experiments[self.name].eid
 
+        # Redefine print to write to the file we want ({eid}.log)
         print = lambda msg="": log(eid=self.eid, msg=msg)
         csvs = []
         if not self.csv_names:
             self.csv_names = []
         for csv_name in self.csv_names:
+            # Define each CSV as lambda that can write one or more rows to the corresponding file.
             csvfile = lambda rows, name=csv_name, eid=self.eid: write_csv_rows(eid, name, rows)
             csvs.append(csvfile)
 
-        running_experiments[self.eid] = self
+        running_experiments[self.name] = self
         print("Starting experiment {}, EID: {}".format(self.name, self.eid))
-        return (self.eid, print, *csvs)
+        return (self.eid, print, *csvs) # After this line the Experiment block is executed.
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        # The experiment block finished executing (either naturally or because of an exception)
         del running_experiments[self.eid]
-        with open('/root/exception{}.txt'.format(self.eid), 'a+') as f:
-            f.write(str(exc_type))
-            f.write(str(exc_val))
-            f.write(str(exc_tb))
+        if exc_type:
+            # There had been an exception in Experiment block
+            with open(join(results_dir, 'exception{}.txt'.format(self.eid)), 'a+') as f:
+                f.write(str(exc_type))
+                f.write(str(exc_val))
+                f.write(str(exc_tb))
         return False
 
 
-def write_csv_rows(eid, name, rows):
+def write_csv_rows(eid, name, row_or_rows):
     csvfile = experiment_csv(eid, name=name)
     new = not os.path.exists(csvfile)
-    if isinstance(rows, dict):
-        rows = [rows]
+    if isinstance(row_or_rows, dict):
+        rows = [row_or_rows]
+    else:
+        rows = row_or_rows
 
     with open(csvfile, 'a+', newline='') as csvfile:
         fieldnames = list(rows)[0].keys()
@@ -540,29 +570,32 @@ def write_csv_rows(eid, name, rows):
 
 
 @plugin.method('only_connect')
-def only_connect(plugin, nodes_file=None):
+def only_connect(plugin, nodes_file):
     """
-    Connect only to nodes and see if they gossip us and if they disconnect.
+    Connect to nodes (without opening any channels) and see if they gossip us and if they disconnect.
+    Takes nodes from a file specified by nodes_file. Make sure to disconnect from all peers and clearing the local
+    network view before running this!
+    :param nodes_file That file must be in the same JSON format as what is returned by 'listnodes' RPC call.
+    Can be acquired directly from listnodes. Alternatively, if you want to run this for nodes with specific channel degree,
+    'lightning-cli nodes_with_degree min max' will produce a list of nodes in a similar format. See that call for more details.
     """
+
+    if len(plugin.rpc.listpeers()['peers']) > 0:
+        return "ERROR: To run the connect_only experiment, " \
+               " there should be no nodes in the local network view AND no peers connected."
 
     N_PEERS = -1 # number of peers to connect to. -1 For all on 1ml.com
 
     with Experiment('only_connect', ['peers', 'gossip']) as (eid, print, write_peers, write_gossip):
 
-        if nodes_file:
-            print("nodes_file = {}".format(nodes_file))
-            if not exists(nodes_file):
-                raise Exception('File not found')
-            with open(nodes_file, 'r') as f:
-                nodes = json.loads(f.read())['nodes']
-            print("Found {} nodes in nodes_file".format(len(nodes)))
+        print("nodes_file = {}".format(nodes_file))
+        if not exists(nodes_file):
+            raise Exception('File not found')
+        with open(nodes_file, 'r') as f:
+            nodes = json.loads(f.read())['nodes']
+        print("Found {} nodes in nodes_file".format(len(nodes)))
 
 
-        # Get 10 best-connected nodes from 1ml.com
-        # We can't use the node local view yet because it's empty since we are not connected to any nodes.
-        #nodes = nodes_with_degree(channel_count_min=degree_min, channel_count_max=degree_max)
-        #best_connected_nodes = requests.get('https://1ml.com/node?order=channelcount&json=true').json()
-        #first10 = best_connected_nodes[0:N_PEERS] if N_PEERS != -1 else best_connected_nodes
         print("First {} best connected nodes: {}".format(N_PEERS, nodes))
         print()
 
@@ -605,7 +638,7 @@ def only_connect(plugin, nodes_file=None):
 
             write_gossip(dict(delay=str(next_delay),
                               timestamp=(start + next_delay).isoformat(),
-                              n_peers=len(nodes) - len(disconnects),
+                              n_peers=len(plugin.rpc.listpeers()['peers']),
                               new_nodes_since_last_time=len(new_nodes),
                               total_nodes=len(visible_nodes)))
 
@@ -613,13 +646,23 @@ def only_connect(plugin, nodes_file=None):
 def on_disconnect(id, **kwargs):
     nodeid = id
     if 'only_connect' in running_experiments:
-        with Experiment('only_connect', ['disconnects'], start_new=False) as (eid, print, write_disconnect):
+        with Experiment('only_connect', ['disconnects'], allow_attach=False) as (eid, print, write_disconnect):
             print("Node disconnected! {}".format(nodeid))
 
             write_disconnect(dict(nodeid=nodeid, timestamp=datetime.utcnow().isoformat()))
 
+
 @plugin.method('nodes_with_degree')
 def nodes_with_degree(channel_count_min, channel_count_max, limit=50):
+    """
+    Finds nodes that have a number of channels open between channel_count_min and channel_count_max.
+    Uses listnodes RPC method as data source.
+    Returns the result to stdout and writes to a file in /root/results/{min}-{max}.degreenodes.
+    :param channel_count_min: Nodes with less channels than this number won't be included.
+    :param channel_count_max: Nodes with more channels that this number won't be included.
+    :param limit: At most this many nodes are going to be returned.
+    :return:
+    """
     nodes = [(n, len(plugin.rpc.listchannels(source=n['nodeid'])['channels'])) for n in plugin.rpc.listnodes()['nodes']]
 
     with_degree = [n for n, degree in nodes if channel_count_min <= degree <= channel_count_max and 'addresses' in n]
