@@ -444,45 +444,67 @@ def probe_two(plugin, depth=-1, amount=50000000, file_name=None, **kwargs):
 
 @plugin.method('probe_all')
 def probe_all(plugin, depth=1, probes=2500, **kwargs):
-    paths = [{"route": [], "dest": "033f12b6786951cc2f5084c6db6390c152240bb5ee1bbc9a0ed0f18038df97ea76"}]
 
-    for i in range(depth):
-        new_paths = []
-        for path in paths:
-            for channel in plugin.rpc.listchannels(source=path["dest"])["channels"]: # Channels going from path['dest']
-                # return channel
-                if len(path["route"]) == 0 or path["route"][-1]["channel"] != channel["short_channel_id"]:
-                    stop = {}
-                    stop["id"] = channel["destination"]
-                    stop["channel"] = channel["short_channel_id"]
-                    stop["direction"] = 1
-                    stop["msatoshi"] = 500000 - 1000 * i
-                    stop["amount_msat"] = str(stop["msatoshi"]) + "msat"
-                    stop["delay"] = 500 - 150 * i
-                    new_route = {}
-                    new_route["route"] = path["route"] + [stop]
-                    new_route["dest"] = channel["destination"]
-                    # return plugin.rpc.getroute("02ad6fb8d693dc1e4569bcedefadf5f72a931ae027dc0f0c544b34c1c6f3b9a02b", msatoshi=10000, riskfactor=1)
-                    new_paths.append(new_route)
-                    paths = new_paths
+    with Experiment('routing', []) as eid, print:
 
-    # Send Payments
-    hashes = []
-    for path in paths[:probes]:
-        payment_hash = ''.join(choice(string.hexdigits) for _ in range(64))
-        hashes.append(payment_hash)
-        plugin.rpc.sendpay(path["route"], payment_hash)
 
-    # Get Payments Back
-    results = []
-    for hash in hashes:
-        try:
-            plugin.rpc.waitsendpay(hash, 10)
-        except RpcError as e:
-            if "data" not in e.error:
-                return e.error
-            results.append(e.error["data"])
-    return [results, Counter([r["failcodename"] for r in results])]
+        our_node_id = plugin.rpc.getinfo()['id']
+        connected_peers = plugin.rpc.listpeers()['peers']
+        nodes = plugin.rpc.listnodes()['nodes']
+
+        # First, let's to some safety checks.
+        # We only want to start sending money around once we have gathered enough gossip.
+
+        if len(connected_peers) == 0:
+            return "Please connect to some peers and wait a bit to collect the gossip"
+
+        if len(nodes) < 5000:
+            return "It seems that you don't have all the nodes in the network view yet. You have " + \
+                   str(len(nodes)) +\
+                   ", there are around 5500 (June 2020). Please connect to some peers and wait for more gossip."
+
+
+
+
+        paths = [{"route": [], "dest": "033f12b6786951cc2f5084c6db6390c152240bb5ee1bbc9a0ed0f18038df97ea76"}]
+
+        for i in range(depth):
+            new_paths = []
+            for path in paths:
+                for channel in plugin.rpc.listchannels(source=path["dest"])["channels"]: # Channels going from path['dest']
+                    # return channel
+                    if len(path["route"]) == 0 or path["route"][-1]["channel"] != channel["short_channel_id"]:
+                        stop = {}
+                        stop["id"] = channel["destination"]
+                        stop["channel"] = channel["short_channel_id"]
+                        stop["direction"] = 1
+                        stop["msatoshi"] = 500000 - 1000 * i
+                        stop["amount_msat"] = str(stop["msatoshi"]) + "msat"
+                        stop["delay"] = 500 - 150 * i
+                        new_route = {}
+                        new_route["route"] = path["route"] + [stop]
+                        new_route["dest"] = channel["destination"]
+                        # return plugin.rpc.getroute("02ad6fb8d693dc1e4569bcedefadf5f72a931ae027dc0f0c544b34c1c6f3b9a02b", msatoshi=10000, riskfactor=1)
+                        new_paths.append(new_route)
+                        paths = new_paths
+
+        # Send Payments
+        hashes = []
+        for path in paths[:probes]:
+            payment_hash = ''.join(choice(string.hexdigits) for _ in range(64))
+            hashes.append(payment_hash)
+            plugin.rpc.sendpay(path["route"], payment_hash)
+
+        # Get Payments Back
+        results = []
+        for hash in hashes:
+            try:
+                plugin.rpc.waitsendpay(hash, 10)
+            except RpcError as e:
+                if "data" not in e.error:
+                    return e.error
+                results.append(e.error["data"])
+        return [results, Counter([r["failcodename"] for r in results])]
 
 
 # return [paths, len(paths)]
