@@ -493,26 +493,28 @@ def probe_all(plugin, max_depth=1, probes=2500, **kwargs):
                 for channel in plugin.rpc.listchannels(source=path["dest"])["channels"]: # Channels going from path['dest']
                     # return channel
                     if len(path["route"]) == 0 or path["route"][-1]["channel"] != channel["short_channel_id"]:
-                        for amount_msat, amount_usd in amounts.items():
-                            amount_msat -= 1000 * depth
-                            stop = dict(
-                                id=channel["destination"],
-                                channel=channel["short_channel_id"],
-                                direction=1,
-                                msatoshi=amount_msat,
-                                amount_msat="{}msat".format(amount_msat),
-                                delay=500 - 150 * depth
-                            )
-                            new_route = dict(
-                                route=path["route"] + [stop],
-                                dest=channel["destination"]
-                            )
-                            route = new_route['route']
-                            payment = PlannedPayment(stop['id'], amount_msat, str(amount_usd), route, len(route))
-                            write_planned(dict(payment)) # Write to CSV
-                            new_paths.append(new_route)
-                            paths = new_paths
-                            print("New route: {}".format(new_route))
+                        if channel["destination"] not in nodes:
+                            nodes.append(channel['destination'])
+                            for amount_msat, amount_usd in amounts.items():
+                                amount_msat -= 1000 * depth
+                                stop = dict(
+                                    id=channel["destination"],
+                                    channel=channel["short_channel_id"],
+                                    direction=1,
+                                    msatoshi=amount_msat,
+                                    amount_msat="{}msat".format(amount_msat),
+                                    delay=500 - 150 * depth
+                                )
+                                new_route = dict(
+                                    route=path["route"] + [stop],
+                                    dest=channel["destination"]
+                                )
+                                route = new_route['route']
+                                payment = PlannedPayment(stop['id'], amount_msat, str(amount_usd), route, len(route))
+                                write_planned(payment.__dict__) # Write to CSV
+                                new_paths.append(new_route)
+                                paths = new_paths
+                                print("New route: {}".format(new_route))
 
 
         print("Loop done!")
