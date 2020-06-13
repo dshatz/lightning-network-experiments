@@ -73,6 +73,7 @@ temporary_exclusions = {}
 
 results_dir = "/root/results/"
 
+SUCCESS_ERROR_MESSAGE = "WIRE_INCORRECT_OR_UNKNOWN_PAYMENT_DETAILS"
 
 def next_experiment_id():
     if not os.path.exists(results_dir):
@@ -332,7 +333,6 @@ def probe_two(plugin, depth=-1, amount=50000000, file_name=None, **kwargs):
     d = 0
     results = []
     att_chan = set()
-    SUCCESS_ERROR_MESSAGE = "WIRE_INCORRECT_OR_UNKNOWN_PAYMENT_DETAILS"
 
     # for i in range(depth):
     while len(paths) > 0:
@@ -448,7 +448,7 @@ def probe_two(plugin, depth=-1, amount=50000000, file_name=None, **kwargs):
 @plugin.method('probe_all')
 def probe_all(plugin, max_depth=1, probes=2500, **kwargs):
 
-    with Experiment('routing', ['planned_payments']) as (eid, print, write_planned):
+    with Experiment('routing', ['planned_payments', 'no_route', 'payments']) as (eid, print, write_planned, write_noroute, write_payment):
 
         our_node_id = plugin.rpc.getinfo()['id']
         connected_peers = plugin.rpc.listpeers()['peers']
@@ -460,7 +460,6 @@ def probe_all(plugin, max_depth=1, probes=2500, **kwargs):
         print("depth = {}, probes={}".format(max_depth, probes))
         print("There are {} connected peers, {} visible nodes".format(len(connected_peers), len(nodes)))
         print("Current node id: {}".format(our_node_id))
-
 
         if len(connected_peers) == 0:
             raise Exception("Please connect to some peers and wait a bit to collect the gossip")
@@ -476,67 +475,109 @@ def probe_all(plugin, max_depth=1, probes=2500, **kwargs):
             106015000: 10 # 10 USD
         }
 
-        class PlannedPayment:
-            def __init__(self, dest_node_id, amount_msat, amount_usd, route, route_length):
+        print("Loop done!")
+        #return "Exiting for now"
+
+        failing_channels = []
+        def add_failing_channel(error_data):
+            """
+            Call this whenever sendpay fails because of WIRE_TEMPORARY_CHANNEL_FAILURE.
+            We need to remember which channel is faulty to re-attempt the connection along a different route next time.
+            :param error_data: RpcError.error['data'] (thrown by sendpay)
+            """
+            entry = "{}/{}".format(error_data['erring_channel'], error_data['erring_direction'])
+            print("Adding failing channel: {}".format(entry))
+            failing_channels.append(entry)
+
+        class Payment:
+            def __init__(self, dest_node_id, amount_msat):
                 self.dest_node_id = dest_node_id
                 self.amount_msat = amount_msat
-                self.amount_usd = amount_usd
-                self.route = route
-                self.route_length = route_length
+                self.amount_usd = amounts[amount_msat]
 
-        nodes = []
-        paths = [{"route": [], "dest": our_node_id}]
+                self.route = None
+                self.route_length = None
 
-        for depth in range(max_depth):
-            new_paths = []
-            for path in paths:
-                for channel in plugin.rpc.listchannels(source=path["dest"])["channels"]: # Channels going from path['dest']
-                    # return channel
-                    if len(path["route"]) == 0 or path["route"][-1]["channel"] != channel["short_channel_id"]:
-                        if channel["destination"] not in nodes:
-                            nodes.append(channel['destination'])
-                            for amount_msat, amount_usd in amounts.items():
-                                amount_msat -= 1000 * depth
-                                stop = dict(
-                                    id=channel["destination"],
-                                    channel=channel["short_channel_id"],
-                                    direction=1,
-                                    msatoshi=amount_msat,
-                                    amount_msat="{}msat".format(amount_msat),
-                                    delay=500 - 150 * depth
-                                )
-                                new_route = dict(
-                                    route=path["route"] + [stop],
-                                    dest=channel["destination"]
-                                )
-                                route = new_route['route']
-                                payment = PlannedPayment(stop['id'], amount_msat, str(amount_usd), route, len(route))
-                                write_planned(payment.__dict__) # Write to CSV
-                                new_paths.append(new_route)
-                                paths = new_paths
-                                print("New route: {}".format(new_route))
+                self.start_time = None
+                self.end_time = None
+                self.failcodename = None
+                self.response = None
+                self.success = None
+                self.attempts = 0
+
+            def __str__(self):
+                return "Payment of {} ({}) to {}".format(self.amount_msat, self.amount_usd, self.dest_node_id)
+
+            def find_route(self):
+                try:
+                    route = plugin.rpc.getroute(self.dest_node_id, self.amount_msat, 1, exclude=failing_channels)
+                    self.route = route['route']
+                    return True
+                except RpcError as e:
+                    if 'code' in e.error:
+                        if e.error['code'] == 205:
+                            print("No route for amount {} found to {}".format(self.amount_msat, self.dest_node_id))
+                            write_noroute(dict(
+                                nodeid=self.dest_node_id,
+                                amount_msat=self.amount_msat,
+                                amount_usd=self.amount_usd,
+                                timestamp=datetime.utcnow(),
+                                code=e.error['code'],
+                                response=str(e.error)
+                            ))
+                    print(str(e.error))
+                    return False
+
+            def send_with_retry(self, max_attempts=25):
+                while self.attempts < max_attempts:
+                    old_route = self.route
+                    new_route_found = self.find_route()
+                    # assert old_route != self.route
+                    if not new_route_found:
+                        self.failcodename = "NO ROUTE"
+                        self.end_time = datetime.utcnow()
+                        self.success = False
+                        return
+                    self.success = self.send()
+                    if self.success:
+                        break
+
+            def send(self):
+                self.attempts += 1
+                print("Attempt {}: {}".format(self.attempts, payment))
+                payment_hash = ''.join(choice(string.hexdigits) for _ in range(64))
+                self.start_time = datetime.utcnow()
+                try:
+                    plugin.rpc.sendpay(self.route, payment_hash)
+                    plugin.rpc.waitsendpay(payment_hash, 120)
+                    self.response = "Timeout"
+                    return False
+                except RpcError as e:
+                    self.response = e.error
+                    print("Payment complete! Error: {}".format(e.error))
+                    if "data" not in e.error:
+                        return False
+                    else:
+                        resp = e.error["data"]
+                        add_failing_channel(resp)
+                        self.failcodename = resp["failcodename"]
+                        if resp["failcodename"] == SUCCESS_ERROR_MESSAGE:
+                            return True
+                        elif resp["failcodename"] == "WIRE_UNKNOWN_NEXT_PEER":
+                            return False
+                        return False
+                finally:
+                    self.end_time = datetime.utcnow()
 
 
-        print("Loop done!")
-        print(paths)
-        return "Exiting for now"
         # Send Payments
-        hashes = []
-        for path in paths[:probes]:
-            payment_hash = ''.join(choice(string.hexdigits) for _ in range(64))
-            hashes.append(payment_hash)
-            plugin.rpc.sendpay(path["route"], payment_hash)
+        for n in nodes:
+            for amount_msat in amounts.keys():
+                payment = Payment(n['nodeid'], amount_msat)
+                payment.send_with_retry()
+                write_payment(payment.__dict__)
 
-        # Get Payments Back
-        results = []
-        for hash in hashes:
-            try:
-                plugin.rpc.waitsendpay(hash, 10)
-            except RpcError as e:
-                if "data" not in e.error:
-                    return e.error
-                results.append(e.error["data"])
-        return [results, Counter([r["failcodename"] for r in results])]
+        return "end of experiment"
 
 
 # return [paths, len(paths)]
@@ -636,8 +677,9 @@ def only_connect(plugin, nodes_file):
     """
 
     if len(plugin.rpc.listpeers()['peers']) > 0:
-        return "ERROR: To run the connect_only experiment, " \
-               " there should be no nodes in the local network view AND no peers connected."
+        pass
+        #return "ERROR: To run the connect_only experiment, " \
+        #       " there should be no nodes in the local network view AND no peers connected."
 
     N_PEERS = -1 # number of peers to connect to. -1 For all on 1ml.com
 
