@@ -35,6 +35,7 @@ Failcode -1 and 16399 are special:
 """
 import csv
 import itertools
+import traceback
 from concurrent.futures._base import ALL_COMPLETED, wait
 from concurrent.futures.thread import ThreadPoolExecutor
 from copy import deepcopy
@@ -85,6 +86,8 @@ def next_experiment_id():
 
 
 def log(eid, msg):
+    if not isinstance(msg, str):
+        msg = repr(msg)
     file = join(results_dir, '{}.log'.format(eid))
     with open(file, 'a+') as f:
         print("[{}]: {}".format(datetime.utcnow().isoformat(), msg.encode('ascii', 'ignore').decode('ascii')), file=f)
@@ -445,8 +448,7 @@ def probe_two(plugin, depth=-1, amount=50000000, file_name=None, **kwargs):
 @plugin.method('probe_all')
 def probe_all(plugin, depth=1, probes=2500, **kwargs):
 
-    with Experiment('routing', []) as eid, print:
-
+    with Experiment('routing', []) as (eid, print):
 
         our_node_id = plugin.rpc.getinfo()['id']
         connected_peers = plugin.rpc.listpeers()['peers']
@@ -455,18 +457,23 @@ def probe_all(plugin, depth=1, probes=2500, **kwargs):
         # First, let's to some safety checks.
         # We only want to start sending money around once we have gathered enough gossip.
 
+        print("depth = {}, probes={}".format(depth, probes))
+        print("There are {} connected peers, {} visible nodes".format(len(connected_peers), len(nodes)))
+        print("Current node id: {}".format(our_node_id))
+
+
         if len(connected_peers) == 0:
-            return "Please connect to some peers and wait a bit to collect the gossip"
+            raise Exception("Please connect to some peers and wait a bit to collect the gossip")
 
         if len(nodes) < 5000:
-            return "It seems that you don't have all the nodes in the network view yet. You have " + \
+            raise Exception("It seems that you don't have all the nodes in the network view yet. You have " + \
                    str(len(nodes)) +\
-                   ", there are around 5500 (June 2020). Please connect to some peers and wait for more gossip."
+                   ", there are around 5500 (June 2020). Please connect to some peers and wait for more gossip.")
 
 
 
 
-        paths = [{"route": [], "dest": "033f12b6786951cc2f5084c6db6390c152240bb5ee1bbc9a0ed0f18038df97ea76"}]
+        paths = [{"route": [], "dest": our_node_id}]
 
         for i in range(depth):
             new_paths = []
@@ -474,20 +481,28 @@ def probe_all(plugin, depth=1, probes=2500, **kwargs):
                 for channel in plugin.rpc.listchannels(source=path["dest"])["channels"]: # Channels going from path['dest']
                     # return channel
                     if len(path["route"]) == 0 or path["route"][-1]["channel"] != channel["short_channel_id"]:
-                        stop = {}
-                        stop["id"] = channel["destination"]
-                        stop["channel"] = channel["short_channel_id"]
-                        stop["direction"] = 1
-                        stop["msatoshi"] = 500000 - 1000 * i
-                        stop["amount_msat"] = str(stop["msatoshi"]) + "msat"
-                        stop["delay"] = 500 - 150 * i
-                        new_route = {}
-                        new_route["route"] = path["route"] + [stop]
-                        new_route["dest"] = channel["destination"]
+                        amount = 500000 - 1000 * i
+                        stop = dict(
+                            id=channel["destination"],
+                            channel=channel["short_channel_id"],
+                            direction=1,
+                            msatoshi=amount,
+                            amount_msat="{}msat".format(amount),
+                            delay=500 - 150 * i
+                        )
+                        new_route = dict(
+                            route=path["route"] + [stop],
+                            dest=channel["destination"]
+                        )
                         # return plugin.rpc.getroute("02ad6fb8d693dc1e4569bcedefadf5f72a931ae027dc0f0c544b34c1c6f3b9a02b", msatoshi=10000, riskfactor=1)
                         new_paths.append(new_route)
                         paths = new_paths
+                        print("New route: {}".format(new_route))
 
+
+        print("Loop done!")
+        print(paths)
+        return "Exiting for now"
         # Send Payments
         hashes = []
         for path in paths[:probes]:
@@ -543,7 +558,8 @@ class Experiment(object):
             self.eid = next_experiment_id()
         else:
             if not self.allow_attach:
-                raise Exception("Experiment with name {} is already running with EID {}".format(self.name, running_experiments[self.name].eid))
+                msg = "Experiment with name {} is already running with EID {}".format(self.name, running_experiments[self.name].eid)
+                raise Exception(msg)
             else:
                 # Attach
                 self.eid = running_experiments[self.name].eid
@@ -558,19 +574,19 @@ class Experiment(object):
             csvfile = lambda rows, name=csv_name, eid=self.eid: write_csv_rows(eid, name, rows)
             csvs.append(csvfile)
 
-        running_experiments[self.name] = self
+        running_experiments[self.eid] = self
         print("Starting experiment {}, EID: {}".format(self.name, self.eid))
         return (self.eid, print, *csvs) # After this line the Experiment block is executed.
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         # The experiment block finished executing (either naturally or because of an exception)
+        log(self.eid, "Experiment completed!")
         del running_experiments[self.eid]
-        if exc_type:
+        if exc_val:
             # There had been an exception in Experiment block
-            with open(join(results_dir, 'exception{}.txt'.format(self.eid)), 'a+') as f:
-                f.write(str(exc_type))
-                f.write(str(exc_val))
-                f.write(str(exc_tb))
+            formatted = traceback.format_exception(exc_type, exc_val, exc_tb)
+            log(self.eid, "Because an exception occurred: {}".format(repr(exc_val)))
+            log(self.eid, "\n".join(formatted))
         return False
 
 
