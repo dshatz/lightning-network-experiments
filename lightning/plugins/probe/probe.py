@@ -446,9 +446,9 @@ def probe_two(plugin, depth=-1, amount=50000000, file_name=None, **kwargs):
 
 
 @plugin.method('probe_all')
-def probe_all(plugin, depth=1, probes=2500, **kwargs):
+def probe_all(plugin, max_depth=1, probes=2500, **kwargs):
 
-    with Experiment('routing', []) as (eid, print):
+    with Experiment('routing', ['planned_payments']) as (eid, print, write_planned):
 
         our_node_id = plugin.rpc.getinfo()['id']
         connected_peers = plugin.rpc.listpeers()['peers']
@@ -457,7 +457,7 @@ def probe_all(plugin, depth=1, probes=2500, **kwargs):
         # First, let's to some safety checks.
         # We only want to start sending money around once we have gathered enough gossip.
 
-        print("depth = {}, probes={}".format(depth, probes))
+        print("depth = {}, probes={}".format(max_depth, probes))
         print("There are {} connected peers, {} visible nodes".format(len(connected_peers), len(nodes)))
         print("Current node id: {}".format(our_node_id))
 
@@ -470,34 +470,49 @@ def probe_all(plugin, depth=1, probes=2500, **kwargs):
                    str(len(nodes)) +\
                    ", there are around 5500 (June 2020). Please connect to some peers and wait for more gossip.")
 
+        amounts = { # mSatoshi -> USD
+            106000: 0.01, # 0.01 USD
+            10601000: 1, # 1 USD
+            106015000: 10 # 10 USD
+        }
 
+        class PlannedPayment:
+            def __init__(self, dest_node_id, amount_msat, amount_usd, route, route_length):
+                self.dest_node_id = dest_node_id
+                self.amount_msat = amount_msat
+                self.amount_usd = amount_usd
+                self.route = route
+                self.route_length = route_length
 
-
+        nodes = []
         paths = [{"route": [], "dest": our_node_id}]
 
-        for i in range(depth):
+        for depth in range(max_depth):
             new_paths = []
             for path in paths:
                 for channel in plugin.rpc.listchannels(source=path["dest"])["channels"]: # Channels going from path['dest']
                     # return channel
                     if len(path["route"]) == 0 or path["route"][-1]["channel"] != channel["short_channel_id"]:
-                        amount = 500000 - 1000 * i
-                        stop = dict(
-                            id=channel["destination"],
-                            channel=channel["short_channel_id"],
-                            direction=1,
-                            msatoshi=amount,
-                            amount_msat="{}msat".format(amount),
-                            delay=500 - 150 * i
-                        )
-                        new_route = dict(
-                            route=path["route"] + [stop],
-                            dest=channel["destination"]
-                        )
-                        # return plugin.rpc.getroute("02ad6fb8d693dc1e4569bcedefadf5f72a931ae027dc0f0c544b34c1c6f3b9a02b", msatoshi=10000, riskfactor=1)
-                        new_paths.append(new_route)
-                        paths = new_paths
-                        print("New route: {}".format(new_route))
+                        for amount_msat, amount_usd in amounts.items():
+                            amount_msat -= 1000 * depth
+                            stop = dict(
+                                id=channel["destination"],
+                                channel=channel["short_channel_id"],
+                                direction=1,
+                                msatoshi=amount_msat,
+                                amount_msat="{}msat".format(amount_msat),
+                                delay=500 - 150 * depth
+                            )
+                            new_route = dict(
+                                route=path["route"] + [stop],
+                                dest=channel["destination"]
+                            )
+                            route = new_route['route']
+                            payment = PlannedPayment(stop['id'], amount_msat, str(amount_usd), route, len(route))
+                            write_planned(dict(payment)) # Write to CSV
+                            new_paths.append(new_route)
+                            paths = new_paths
+                            print("New route: {}".format(new_route))
 
 
         print("Loop done!")
