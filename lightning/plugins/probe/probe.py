@@ -39,6 +39,7 @@ import traceback
 from concurrent.futures._base import ALL_COMPLETED, wait, as_completed
 from concurrent.futures.thread import ThreadPoolExecutor
 from copy import deepcopy
+from csv import DictReader
 from datetime import datetime, timedelta
 from functools import partial
 from itertools import groupby, repeat
@@ -50,6 +51,7 @@ from uuid import uuid4
 
 import requests
 from pause import until
+from pip._vendor.distlib.util import CSVReader
 from pyln.client import Plugin, RpcError
 from sqlalchemy import Column, Integer, String, DateTime, Boolean, ForeignKey, PrimaryKeyConstraint
 from sqlalchemy import create_engine
@@ -446,9 +448,9 @@ def probe_two(plugin, depth=-1, amount=50000000, file_name=None, **kwargs):
 
 
 @plugin.method('probe_all')
-def probe_all(plugin, parallel_probes=3, probes=10000, **kwargs):
+def probe_all(plugin, progress_file=None, parallel_probes=3, probes=10000, **kwargs):
 
-    with Experiment('routing', ['planned_payments', 'no_route', 'payments']) as (eid, print, write_planned, write_noroute, write_payment):
+    with Experiment('routing', ['planned_payments', 'no_route', 'payments', 'progress']) as (eid, print, write_planned, write_noroute, write_payment, write_progress):
 
         our_node_id = plugin.rpc.getinfo()['id']
         connected_peers = plugin.rpc.listpeers()['peers']
@@ -595,13 +597,39 @@ def probe_all(plugin, parallel_probes=3, probes=10000, **kwargs):
 
         def send_one(payment):
             payment.send_with_retry()
+            write_progress(Progress(payment.dest_node_id, payment.amount_msat).__dict__)
             return payment
+
+
+        progress = []
+        class Progress:
+            def __init__(self, nodeid, amount_msat):
+                self.nodeid = nodeid
+                self.amount_msat = amount_msat
+
+            def __eq__(self, other):
+                return isinstance(other, Progress) \
+                       and self.nodeid == other.nodeid and self.amount_msat == other.amount_msat
+
+        if progress_file:
+            print("Reading progress from {}".format(progress_file))
+            with open(progress_file, 'r') as f:
+                r = DictReader(f, delimiter=',',
+                                quotechar='"', quoting=csv.QUOTE_ALL, fieldnames=list(Progress('a', 1).__dict__.keys()))
+                for row in r:
+                    progress.append(Progress(**row))
+            print("Found {} completed payments in past progress file {}".format(len(progress), progress_file))
+            write_progress([p.__dict__ for p in progress])
+
 
         # Send Payments
         with ThreadPoolExecutor(max_workers=parallel_probes) as pool:
             payments = []
             for node in nodes[:probes]:
                 for amount_msat in amounts.keys():
+                    if Progress(node['nodeid'], amount_msat) in progress:
+                        continue
+
                     payments.append(Payment(node['nodeid'], amount_msat))
 
             results = pool.map(send_one, payments)
