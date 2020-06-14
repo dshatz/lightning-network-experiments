@@ -484,7 +484,7 @@ def probe_all(plugin, parallel_probes=3, probes=10000, **kwargs):
                 self.amount_msat = amount_msat
                 self.amount_usd = amounts[amount_msat]
 
-                self.route = None
+                self.latest_route = None
                 self.route_length = None
 
                 self.start_time = None
@@ -513,32 +513,36 @@ def probe_all(plugin, parallel_probes=3, probes=10000, **kwargs):
             def find_route(self):
                 try:
                     route = plugin.rpc.getroute(self.dest_node_id, self.amount_msat, 1, exclude=self.failing_channels)
-                    self.route = route['route']
-                    self.route_length = len(self.route)
+                    self.latest_route = route['route']
+                    self.route_length = len(self.latest_route)
                     return True
                 except RpcError as e:
                     if 'code' in e.error:
                         if e.error['code'] == 205:
-                            print("No route for amount {} found to {}".format(self.amount_msat, self.dest_node_id))
-                            write_noroute(dict(
-                                nodeid=self.dest_node_id,
-                                amount_msat=self.amount_msat,
-                                amount_usd=self.amount_usd,
-                                timestamp=datetime.utcnow(),
-                                code=e.error['code'],
-                                response=str(e.error)
-                            ))
+                            if self.attempts == 0:
+                                print("No route for amount {} found to {}".format(self.amount_msat, self.dest_node_id))
+                                write_noroute(dict(
+                                    nodeid=self.dest_node_id,
+                                    amount_msat=self.amount_msat,
+                                    amount_usd=self.amount_usd,
+                                    timestamp=datetime.utcnow(),
+                                    code=e.error['code'],
+                                    response=str(e.error)
+                                ))
                     print(str(e.error))
                     return False
 
             def send_with_retry(self, max_attempts=25):
                 self.failing_channels.clear()
                 while self.attempts < max_attempts:
-                    old_route = self.route
                     new_route_found = self.find_route()
-                    # assert old_route != self.route
                     if not new_route_found:
-                        self.failcodename = "NO ROUTE"
+                        if not self.latest_route:
+                            # We can't even find 1 route to perform the payment
+                            # Don't do anything with this payment.
+                            # The find_route marks this payment as one with no known route.
+                            return
+                        self.failcodename = "NO ROUTES LEFT"
                         self.start_time = datetime.utcnow()
                         self.end_time = datetime.utcnow()
                         self.success = False
@@ -556,7 +560,7 @@ def probe_all(plugin, parallel_probes=3, probes=10000, **kwargs):
                 payment_hash = ''.join(choice(string.hexdigits) for _ in range(64))
                 self.start_time = datetime.utcnow()
                 try:
-                    plugin.rpc.sendpay(self.route, payment_hash)
+                    plugin.rpc.sendpay(self.latest_route, payment_hash)
                     plugin.rpc.waitsendpay(payment_hash, 120)
                     self.response = "Timeout"
                     return False
