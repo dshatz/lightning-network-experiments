@@ -446,7 +446,7 @@ def probe_two(plugin, depth=-1, amount=50000000, file_name=None, **kwargs):
 
 
 @plugin.method('probe_all')
-def probe_all(plugin, max_depth=1, probes=2500, **kwargs):
+def probe_all(plugin, probes=10000, **kwargs):
 
     with Experiment('routing', ['planned_payments', 'no_route', 'payments']) as (eid, print, write_planned, write_noroute, write_payment):
 
@@ -457,7 +457,7 @@ def probe_all(plugin, max_depth=1, probes=2500, **kwargs):
         # First, let's to some safety checks.
         # We only want to start sending money around once we have gathered enough gossip.
 
-        print("depth = {}, probes={}".format(max_depth, probes))
+        print("max probes={}".format(probes, probes))
         print("There are {} connected peers, {} visible nodes".format(len(connected_peers), len(nodes)))
         print("Current node id: {}".format(our_node_id))
 
@@ -512,6 +512,7 @@ def probe_all(plugin, max_depth=1, probes=2500, **kwargs):
                 try:
                     route = plugin.rpc.getroute(self.dest_node_id, self.amount_msat, 1, exclude=failing_channels)
                     self.route = route['route']
+                    self.route_length = len(self.route)
                     return True
                 except RpcError as e:
                     if 'code' in e.error:
@@ -529,6 +530,7 @@ def probe_all(plugin, max_depth=1, probes=2500, **kwargs):
                     return False
 
             def send_with_retry(self, max_attempts=25):
+                failing_channels.clear()
                 while self.attempts < max_attempts:
                     old_route = self.route
                     new_route_found = self.find_route()
@@ -559,19 +561,20 @@ def probe_all(plugin, max_depth=1, probes=2500, **kwargs):
                         return False
                     else:
                         resp = e.error["data"]
-                        add_failing_channel(resp)
                         self.failcodename = resp["failcodename"]
                         if resp["failcodename"] == SUCCESS_ERROR_MESSAGE:
                             return True
                         elif resp["failcodename"] == "WIRE_UNKNOWN_NEXT_PEER":
                             return False
+                        elif resp["failcodename"] == "WIRE_TEMPORARY_CHANNEL_FAILURE":
+                            add_failing_channel(resp)
                         return False
                 finally:
                     self.end_time = datetime.utcnow()
 
 
         # Send Payments
-        for n in nodes:
+        for n in nodes[:probes]:
             for amount_msat in amounts.keys():
                 payment = Payment(n['nodeid'], amount_msat)
                 payment.send_with_retry()
