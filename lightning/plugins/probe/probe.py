@@ -478,17 +478,6 @@ def probe_all(plugin, probes=10000, **kwargs):
         print("Loop done!")
         #return "Exiting for now"
 
-        failing_channels = []
-        def add_failing_channel(error_data):
-            """
-            Call this whenever sendpay fails because of WIRE_TEMPORARY_CHANNEL_FAILURE.
-            We need to remember which channel is faulty to re-attempt the connection along a different route next time.
-            :param error_data: RpcError.error['data'] (thrown by sendpay)
-            """
-            entry = "{}/{}".format(error_data['erring_channel'], error_data['erring_direction'])
-            print("Adding failing channel: {}".format(entry))
-            failing_channels.append(entry)
-
         class Payment:
             def __init__(self, dest_node_id, amount_msat):
                 self.dest_node_id = dest_node_id
@@ -505,12 +494,24 @@ def probe_all(plugin, probes=10000, **kwargs):
                 self.success = None
                 self.attempts = 0
 
+                self.failing_channels = []
+
             def __str__(self):
                 return "Payment of {} ({}) to {}".format(self.amount_msat, self.amount_usd, self.dest_node_id)
 
+            def add_failing_channel(self, error_data):
+                """
+                Call this whenever sendpay fails because of WIRE_TEMPORARY_CHANNEL_FAILURE.
+                We need to remember which channel is faulty to re-attempt the connection along a different route next time.
+                :param error_data: RpcError.error['data'] (thrown by sendpay)
+                """
+                entry = "{}/{}".format(error_data['erring_channel'], error_data['erring_direction'])
+                self.failing_channels.append(entry)
+
+
             def find_route(self):
                 try:
-                    route = plugin.rpc.getroute(self.dest_node_id, self.amount_msat, 1, exclude=failing_channels)
+                    route = plugin.rpc.getroute(self.dest_node_id, self.amount_msat, 1, exclude=self.failing_channels)
                     self.route = route['route']
                     self.route_length = len(self.route)
                     return True
@@ -530,19 +531,21 @@ def probe_all(plugin, probes=10000, **kwargs):
                     return False
 
             def send_with_retry(self, max_attempts=25):
-                failing_channels.clear()
+                self.failing_channels.clear()
                 while self.attempts < max_attempts:
                     old_route = self.route
                     new_route_found = self.find_route()
                     # assert old_route != self.route
                     if not new_route_found:
                         self.failcodename = "NO ROUTE"
+                        self.start_time = datetime.utcnow()
                         self.end_time = datetime.utcnow()
                         self.success = False
                         return
                     self.success = self.send()
                     if self.success:
                         break
+                    sleep(1)
 
             def send(self):
                 self.attempts += 1
@@ -567,7 +570,7 @@ def probe_all(plugin, probes=10000, **kwargs):
                         elif resp["failcodename"] == "WIRE_UNKNOWN_NEXT_PEER":
                             return False
                         elif resp["failcodename"] == "WIRE_TEMPORARY_CHANNEL_FAILURE":
-                            add_failing_channel(resp)
+                            self.add_failing_channel(resp)
                         return False
                 finally:
                     self.end_time = datetime.utcnow()
