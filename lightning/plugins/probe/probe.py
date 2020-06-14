@@ -36,7 +36,7 @@ Failcode -1 and 16399 are special:
 import csv
 import itertools
 import traceback
-from concurrent.futures._base import ALL_COMPLETED, wait
+from concurrent.futures._base import ALL_COMPLETED, wait, as_completed
 from concurrent.futures.thread import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import datetime, timedelta
@@ -446,7 +446,7 @@ def probe_two(plugin, depth=-1, amount=50000000, file_name=None, **kwargs):
 
 
 @plugin.method('probe_all')
-def probe_all(plugin, probes=10000, **kwargs):
+def probe_all(plugin, parallel_probes=3, probes=10000, **kwargs):
 
     with Experiment('routing', ['planned_payments', 'no_route', 'payments']) as (eid, print, write_planned, write_noroute, write_payment):
 
@@ -493,6 +493,7 @@ def probe_all(plugin, probes=10000, **kwargs):
                 self.response = None
                 self.success = None
                 self.attempts = 0
+                self.duration = 0
 
                 self.failing_channels = []
 
@@ -546,10 +547,12 @@ def probe_all(plugin, probes=10000, **kwargs):
                     if self.success:
                         break
                     sleep(1)
+                self.duration = self.end_time - self.start_time
+                write_payment(self.__dict__)
 
             def send(self):
                 self.attempts += 1
-                print("Attempt {}: {}".format(self.attempts, payment))
+                print("Attempt {}: {}".format(self.attempts, self))
                 payment_hash = ''.join(choice(string.hexdigits) for _ in range(64))
                 self.start_time = datetime.utcnow()
                 try:
@@ -565,23 +568,32 @@ def probe_all(plugin, probes=10000, **kwargs):
                     else:
                         resp = e.error["data"]
                         self.failcodename = resp["failcodename"]
-                        if resp["failcodename"] == SUCCESS_ERROR_MESSAGE:
+                        if self.failcodename == SUCCESS_ERROR_MESSAGE:
                             return True
-                        elif resp["failcodename"] == "WIRE_UNKNOWN_NEXT_PEER":
+                        elif self.failcodename == "WIRE_UNKNOWN_NEXT_PEER":
                             return False
-                        elif resp["failcodename"] == "WIRE_TEMPORARY_CHANNEL_FAILURE":
+                        elif self.failcodename == "WIRE_TEMPORARY_CHANNEL_FAILURE" or self.failcodename == "WIRE_FEE_INSUFFICIENT":
                             self.add_failing_channel(resp)
                         return False
                 finally:
                     self.end_time = datetime.utcnow()
 
 
+
+        def send_one(payment):
+            payment.send_with_retry()
+            return payment
+
         # Send Payments
-        for n in nodes[:probes]:
-            for amount_msat in amounts.keys():
-                payment = Payment(n['nodeid'], amount_msat)
-                payment.send_with_retry()
-                write_payment(payment.__dict__)
+        with ThreadPoolExecutor(max_workers=parallel_probes) as pool:
+            payments = []
+            for node in nodes[:probes]:
+                for amount_msat in amounts.keys():
+                    payments.append(Payment(node['nodeid'], amount_msat))
+
+            results = pool.map(send_one, payments)
+            for completed in results:
+                print("completed {}".format(completed))
 
         return "end of experiment"
 
