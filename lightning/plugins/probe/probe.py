@@ -576,7 +576,16 @@ def probe_all(plugin, parallel_probes=3, probes=10000, **kwargs):
                             return True
                         elif self.failcodename == "WIRE_UNKNOWN_NEXT_PEER":
                             return False
-                        elif self.failcodename == "WIRE_TEMPORARY_CHANNEL_FAILURE" or self.failcodename == "WIRE_FEE_INSUFFICIENT":
+                        elif self.failcodename == "WIRE_TEMPORARY_CHANNEL_FAILURE":
+                            if 'Too many HTLCs' in self.response['message']:
+                                # Looks like we have overloaded (our?) channel. Let's pause for a while
+                                print("Too many HTLCs reported! Sleeping...")
+                                sleep(600) # 10 minutes
+                                self.attempts -= 1 # Don't count this attempt
+                                return False
+                            else:
+                                self.add_failing_channel(resp)
+                        elif self.failcodename == "WIRE_FEE_INSUFFICIENT":
                             self.add_failing_channel(resp)
                         return False
                 finally:

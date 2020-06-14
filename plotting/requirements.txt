@@ -1,0 +1,4 @@
+Sqlalchemy
+pandas
+psycopg2-binary
+matplotlib
