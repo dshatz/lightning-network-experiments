@@ -447,8 +447,10 @@ def probe_two(plugin, depth=-1, amount=50000000, file_name=None, **kwargs):
     return results
 
 
+overloaded_channels = dict()
+
 @plugin.method('probe_all')
-def probe_all(plugin, progress_file=None, parallel_probes=3, probes=10000, **kwargs):
+def probe_all(plugin, progress_file=None, parallel_probes=3, probes=1000, **kwargs):
 
     with Experiment('routing', ['planned_payments', 'no_route', 'payments', 'progress']) as (eid, print, write_planned, write_noroute, write_payment, write_progress):
 
@@ -511,10 +513,23 @@ def probe_all(plugin, progress_file=None, parallel_probes=3, probes=10000, **kwa
                 entry = "{}/{}".format(error_data['erring_channel'], error_data['erring_direction'])
                 self.failing_channels.append(entry)
 
+            def add_overloaded_channel(self, error_data, duration=timedelta(minutes=10)):
+                entry = "{}/{}".format(error_data['erring_channel'], error_data['erring_direction'])
+                overloaded_channels[entry] = datetime.now() + duration
+
+            def get_overloaded_channels(self):
+                for ch in overloaded_channels.keys():
+                    if overloaded_channels[ch] < datetime.now():
+                        del overloaded_channels[ch]
+
+                return list(overloaded_channels.keys())
 
             def find_route(self):
                 try:
-                    route = plugin.rpc.getroute(self.dest_node_id, self.amount_msat, 1, exclude=self.failing_channels)
+                    # The experiment is performed with 3 outgoing channels. We need to wait if they are all overloaded.
+                    while len(self.get_overloaded_channels()) >= 3:
+                        sleep(10)
+                    route = plugin.rpc.getroute(self.dest_node_id, self.amount_msat, 1, exclude=self.failing_channels + self.get_overloaded_channels())
                     self.latest_route = route['route']
                     self.route_length = len(self.latest_route)
                     return True
@@ -580,9 +595,9 @@ def probe_all(plugin, progress_file=None, parallel_probes=3, probes=10000, **kwa
                             return False
                         elif self.failcodename == "WIRE_TEMPORARY_CHANNEL_FAILURE":
                             if 'Too many HTLCs' in self.response['message']:
-                                # Looks like we have overloaded (our?) channel. Let's pause for a while
-                                print("Too many HTLCs reported! Sleeping...")
-                                sleep(600) # 10 minutes
+                                # Looks like we have overloaded (our?) channel. Let's not use this channel for a while
+                                self.add_overloaded_channel(resp)
+                                print("Too many HTLCs reported! Not using this channel for 10 minutes: {}".format(resp['erring_channel']))
                                 self.attempts -= 1 # Don't count this attempt
                                 return False
                             else:
