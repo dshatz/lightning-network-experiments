@@ -565,7 +565,7 @@ def probe_all(plugin, progress_file=None, parallel_probes=3, probes=1000, **kwar
                         self.success = False
                         return
                     self.success = self.send()
-                    if self.success:
+                    if self.success or (not self.success and self.response == "Timeout"):
                         break
                     sleep(1)
                 self.duration = self.end_time - self.start_time
@@ -584,6 +584,11 @@ def probe_all(plugin, progress_file=None, parallel_probes=3, probes=1000, **kwar
                 except RpcError as e:
                     self.response = e.error
                     print("Payment complete! Error: {}".format(e.error))
+                    if e.error['message'] == "Timed out while waiting":
+                        # If this is a timeout, we don't want to retry because that can overload our channels.
+                        self.response = "Timeout"
+                        self.failcodename = e.error['message']
+                        return False
                     if "data" not in e.error:
                         return False
                     else:
