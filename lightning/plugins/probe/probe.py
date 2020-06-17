@@ -450,7 +450,7 @@ def probe_two(plugin, depth=-1, amount=50000000, file_name=None, **kwargs):
 overloaded_channels = dict()
 
 @plugin.method('probe_all')
-def probe_all(plugin, progress_file=None, parallel_probes=3, probes=1000, **kwargs):
+def probe_all(plugin, progress_file=None, parallel_probes=3, probes=100000, **kwargs):
 
     with Experiment('routing', ['planned_payments', 'no_route', 'payments', 'progress']) as (eid, print, write_planned, write_noroute, write_payment, write_progress):
 

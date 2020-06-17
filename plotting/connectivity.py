@@ -96,10 +96,22 @@ def connection_successes():
 def visible_nodes():
     nodes_over_time = list(session.execute("select extract (epoch from delay) as secs, to_char(delay, 'HH24 hrs, MI mnutes, ss secs') as time, total_nodes from gossip_most order by time asc"))
     df = DataFrame(nodes_over_time, columns=['secs', 'time', 'total_nodes'])
-    df.index = df[['secs']]
+    #df.index = df[['secs']]
     print(df)
     plot = df.plot(kind='line', x_compat=True)
     saveplot(plot, 'gossip', tilt_x_labels=60)
+
+def connection_failure_reasons():
+
+    refused = session.execute("select count(*) from peers where connectresult like '%refused%'").scalar()
+    no_tor_circuit = session.execute("select count(*) from peers where connectresult like '%in progress%'").scalar()
+    timeout = session.execute("select count(*) from peers where connectresult like '%timed out%'").scalar()
+    index = ['TCP Connection refused', 'Unable to establish Tor circuit', 'Timeout', 'Other error']
+    df = DataFrame({'Connection errors': [refused, no_tor_circuit, timeout, 1]}, index=index)
+    plot = df.plot(kind='pie', y='Connection errors', labels=None)
+    plot.set_ylabel('')
+    saveplot(plot, 'connection_errors')
+
 
 def saveplot(plot, name, tilt_x_labels=False):
     if tilt_x_labels:
@@ -113,3 +125,4 @@ if __name__ == "__main__":
     connection_times()
     connection_successes()
     visible_nodes()
+    connection_failure_reasons()
