@@ -64,7 +64,7 @@ import os
 import random
 import string
 import threading
-from collections import Counter
+from collections import Counter, OrderedDict
 import math
 
 Base = declarative_base()
@@ -735,7 +735,7 @@ def write_csv_rows(eid, name, row_or_rows):
     else:
         rows = row_or_rows
 
-    rows = [sorted(r) for r in rows]
+    rows = [OrderedDict(sorted(r.items())) for r in rows]
 
     with open(csvfile, 'a+', newline='') as csvfile:
         fieldnames = list(rows)[0].keys()
