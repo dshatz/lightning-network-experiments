@@ -735,6 +735,8 @@ def write_csv_rows(eid, name, row_or_rows):
     else:
         rows = row_or_rows
 
+    rows = [sorted(r) for r in rows]
+
     with open(csvfile, 'a+', newline='') as csvfile:
         fieldnames = list(rows)[0].keys()
         writer = csv.DictWriter(csvfile, delimiter=',',
