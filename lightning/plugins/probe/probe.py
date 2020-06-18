@@ -652,6 +652,7 @@ def probe_all(plugin, progress_file=None, parallel_probes=3, probes=100000, **kw
 
                     payments.append(Payment(node['nodeid'], amount_msat))
 
+            random.shuffle(payments) # Avoid sending 3 payments to the same node one after the other
             results = pool.map(send_one, payments)
             for completed in results:
                 print("completed {}".format(completed))
