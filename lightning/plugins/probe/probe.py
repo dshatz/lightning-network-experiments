@@ -609,6 +609,9 @@ def probe_all(plugin, progress_file=None, parallel_probes=3, probes=100000, **kw
                                 self.add_failing_channel(resp)
                         elif self.failcodename == "WIRE_FEE_INSUFFICIENT":
                             self.add_failing_channel(resp)
+                        elif self.failcodename == "WIRE_REQUIRED_NODE_FEATURE_MISSING":
+                            # Channel is likely overloaded. Try another one.
+                            self.add_failing_channel(resp)
                         return False
                 finally:
                     self.end_time = datetime.utcnow()
@@ -652,7 +655,6 @@ def probe_all(plugin, progress_file=None, parallel_probes=3, probes=100000, **kw
 
                     payments.append(Payment(node['nodeid'], amount_msat))
 
-            random.shuffle(payments) # Avoid sending 3 payments to the same node one after the other
             results = pool.map(send_one, payments)
             for completed in results:
                 print("completed {}".format(completed))
