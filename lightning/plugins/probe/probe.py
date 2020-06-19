@@ -624,23 +624,32 @@ def probe_all(plugin, progress_file=None, parallel_probes=3, probes=100000, **kw
             return payment
 
 
-        progress = []
+        progress = set()
         class Progress:
             def __init__(self, nodeid, amount_msat):
                 self.nodeid = nodeid
-                self.amount_msat = amount_msat
+                self.amount_msat = int(amount_msat)
 
             def __eq__(self, other):
                 return isinstance(other, Progress) \
                        and self.nodeid == other.nodeid and self.amount_msat == other.amount_msat
 
+            def __hash__(self):
+                return hash((self.nodeid, self.amount_msat))
+
+            def __repr__(self):
+                return "Progress {nodeid=" + self.nodeid + "; amount_msat=" + str(self.amount_msat) + "}"
+
+
         if progress_file:
             print("Reading progress from {}".format(progress_file))
             with open(progress_file, 'r') as f:
                 r = DictReader(f, delimiter=',',
-                                quotechar='"', quoting=csv.QUOTE_ALL, fieldnames=list(Progress('a', 1).__dict__.keys()))
+                                quotechar='"', quoting=csv.QUOTE_ALL, fieldnames=['amount_msat', 'nodeid'])
+                next(r, None) # Skip headers
                 for row in r:
-                    progress.append(Progress(**row))
+                    p = Progress(row['nodeid'], row['amount_msat'])
+                    progress.add(p)
             print("Found {} completed payments in past progress file {}".format(len(progress), progress_file))
             write_progress([p.__dict__ for p in progress])
 
