@@ -593,7 +593,8 @@ def probe_all(plugin, progress_file=None, parallel_probes=3, probes=100000, **kw
                         return False
                     else:
                         resp = e.error["data"]
-                        self.failcodename = resp["failcodename"]
+                        # Some very rare nodes are weird and don't supply proper errors.
+                        self.failcodename = resp.get("failcodename", None)
                         if self.failcodename == SUCCESS_ERROR_MESSAGE:
                             return True
                         elif self.failcodename == "WIRE_UNKNOWN_NEXT_PEER":
