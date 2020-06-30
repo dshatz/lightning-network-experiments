@@ -1,20 +1,15 @@
-import itertools
-import os
-from datetime import timedelta
-from itertools import repeat
-
-from matplotlib.pyplot import tight_layout, xticks
+from matplotlib import ticker, lines
+from matplotlib.pyplot import tight_layout, xticks, bar
+from matplotlib.ticker import Locator, IndexLocator, LinearLocator
 from pandas import DataFrame, np
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, Session
+import matplotlib.pylab as plt
+from util.db import session
+from util.plot import save_plot
 
 """
 This script takes data from postgresql and plots nice charts.
 You need to manually import the CSVs produced by the experiment to Postgres."""
 
-engine = create_engine(os.environ['SQLALCHEMY_URL'])
-
-session = Session(bind=engine)
 
 def address_types():
     ip_only_1 = session.execute(
@@ -39,7 +34,8 @@ def address_types():
         "select count(*) from nodes_best_connected where total_tor > 0 and total_ip > 0").scalar()
 
 
-    node_types = np.array(['Nodes with 1 channel', 'Nodes with 5-10 channels', 'Nodes with a lot of channels'])
+    node_types = np.array(['Nodes with 1 channel', 'Nodes with 5-10 channels',
+                           'Nodes with higest number\n of channels in the network'])
     ip_only = np.array([ip_only_1, ip_only_5_10, ip_only_best_connected])
     tor_only = np.array([tor_only_1, tor_only_5_10, tor_only_best_connected])
     both = np.array([both_1, both_5_10, both_best_connected])
@@ -54,33 +50,42 @@ def address_types():
     proportion_both = np.true_divide(both, total) * 100
 
 
-
     df = DataFrame([proportion_ip, proportion_tor, proportion_both]).transpose()
     df.index = node_types
     df.columns = ['IP addresses only', 'Onion addresses only', 'Both kinds of addresses']
 
+    print(df)
     plot = df.plot(kind='bar',
             stacked=True)
 
-    saveplot(plot, 'address_types.png', tilt_x_labels=True)
+    save_plot(plot, 'address_types.png', tilt_x_labels=True)
 
 
 def connection_times():
-    durations = list(session.execute("select extract(second from connected_after) from peers"))
+    durations = list(session.execute("select extract(second from connected_after) from connects"))
     df = DataFrame(durations, columns=['Connection time (s)'])
     plot = df.plot(kind='hist')
-    saveplot(plot, 'connection_times')
+    save_plot(plot, 'connection_times')
 
 
 def connection_successes():
-    successes = dict(list(session.execute("select category, count(*) as successes from peers where success=True group by category")))
-    failure = dict(list(session.execute("select category, count(*) as total from peers where success=False group by category")))
+    successes = dict(list(session.execute("select category, count(*) as successes from connects where success=True group by category")))
+    #failure = dict(list(session.execute("select category, count(*) as total from connects where success=False group by category")))
+
+
+    refused = dict(list(session.execute("select category, count(*) from connects where connectresult like '%refused%' group by category")))
+    no_tor_circuit = dict(list(session.execute("select category, count(*) from connects where connectresult like '%in progress%' group by category")))
+    timeout = dict(list(session.execute("select category, count(*) from connects where connectresult like '%timed out%' group by category")))
+    df_refused = DataFrame(refused.items(), columns=['category', 'Connection refused'])
+    df_timeout = DataFrame(timeout.items(), columns=['category', 'Timeout'])
+    df_tor = DataFrame(no_tor_circuit.items(), columns=['category', 'Unable to establish Tor circuit'])
 
     df = DataFrame(successes.items(), columns=['category', 'Connection succeeded'])
-    df2 = DataFrame(failure.items(), columns=['category', 'Connection failed'])
-    df3 = df.merge(df2, how='left')
-    df3.index = ['Nodes with 1 open channel', 'Nodes with 5-10 open channels', 'Nodes with a lot of open channels']
-    df3 = df3.fillna(0)
+    dfe = df.merge(df_refused, how='left').merge(df_timeout, how='left').merge(df_refused, how='left').merge(df_tor, how='left')
+    dfe = dfe.fillna(0)
+    dfe.index = ['Nodes with 1 open channel', 'Nodes with 5-10 open channels',
+                 'Nodes with higest number\n of channels in the network']
+
 
     def normalize(x):
         total = sum(x[1:])
@@ -88,41 +93,44 @@ def connection_successes():
         x[1:] /= total
         return x
 
-    df3 = df3.apply(normalize, axis=1)
-    plot = df3.plot(kind='bar', stacked=True)
-    saveplot(plot, 'connection_success', tilt_x_labels=True)
+    df3 = dfe.apply(normalize, axis=1)
+    plot = df3.plot(kind='bar', stacked=True, color='gryb')
+    save_plot(plot, 'connection_success', tilt_x_labels=True)
 
 
 def visible_nodes():
     nodes_over_time = list(session.execute("select extract (epoch from delay) as secs, to_char(delay, 'HH24 hrs, MI mnutes, ss secs') as time, total_nodes from gossip_most order by time asc"))
-    df = DataFrame(nodes_over_time, columns=['secs', 'time', 'total_nodes'])
-    #df.index = df[['secs']]
+    df = DataFrame(nodes_over_time, columns=['secs', 'Time', 'Nodes in the local network view'])
+    df = df.set_index(['secs'])
+    def human_readable_interval(x):
+        time = x['Time']
+        components = time.split(', ')
+        nonzero = [c for c in components if not c.startswith('00 ')]
+        x['Time'] = ", ".join(nonzero)
+        return x
+
+
+    df = df.apply(human_readable_interval, axis=1)
+    df = df.set_index(['Time'])
     print(df)
     plot = df.plot(kind='line', x_compat=True)
-    saveplot(plot, 'gossip', tilt_x_labels=60)
+    # plot.get_figure().savefig('gossip.png')
+    save_plot(plot, 'gossip', tilt_x_labels=60)
 
 def connection_failure_reasons():
 
-    refused = session.execute("select count(*) from peers where connectresult like '%refused%'").scalar()
-    no_tor_circuit = session.execute("select count(*) from peers where connectresult like '%in progress%'").scalar()
-    timeout = session.execute("select count(*) from peers where connectresult like '%timed out%'").scalar()
+    refused = session.execute("select count(*) from connects where connectresult like '%refused%'").scalar()
+    no_tor_circuit = session.execute("select count(*) from connects where connectresult like '%in progress%'").scalar()
+    timeout = session.execute("select count(*) from connects where connectresult like '%timed out%'").scalar()
     index = ['TCP Connection refused', 'Unable to establish Tor circuit', 'Timeout', 'Other error']
     df = DataFrame({'Connection errors': [refused, no_tor_circuit, timeout, 1]}, index=index)
     plot = df.plot(kind='pie', y='Connection errors', labels=None)
     plot.set_ylabel('')
-    saveplot(plot, 'connection_errors')
-
-
-def saveplot(plot, name, tilt_x_labels=False):
-    if tilt_x_labels:
-        degrees = 45 if isinstance(tilt_x_labels, bool) else tilt_x_labels
-        xticks(rotation=degrees)
-    tight_layout()
-    plot.get_figure().savefig(name)
+    save_plot(plot, 'connection_errors')
 
 if __name__ == "__main__":
-    address_types()
-    connection_times()
-    connection_successes()
+    #address_types()
+    #connection_times()
+    #connection_successes()
     visible_nodes()
-    connection_failure_reasons()
+    #connection_failure_reasons()
